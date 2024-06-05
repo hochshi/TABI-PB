@@ -42,6 +42,7 @@ private:
     std::vector<double> source_charge_dz_;
     
     void generate_elements(Params::Mesh, double, double);
+    bool file_exists(const std::string& name);
     void update_source_term_on_host() const;
     
     

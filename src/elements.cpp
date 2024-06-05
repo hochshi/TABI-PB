@@ -42,6 +42,10 @@ Elements::Elements(const class Molecule& mol, const struct Params& params, struc
     timers_.ctor.stop();
 }
 
+bool Elements::file_exists(const std::string& name) {
+  std::ifstream f(name.c_str());
+  return f.good();
+}
 
 void Elements::generate_elements(Params::Mesh mesh, double mesh_density, double probe_radius)
 {
@@ -74,18 +78,20 @@ void Elements::generate_elements(Params::Mesh mesh, double mesh_density, double 
 
     NS_param_file.close();
     
+    if (not file_exists("triangulatedSurf.vert") or not file_exists("triangulatedSurf.face")) {
 #ifdef _WIN32
-    std::system("NanoShaper.exe");
+      std::system("NanoShaper.exe");
 #else
-    std::system("NanoShaper");
+      std::system("NanoShaper");
 #endif
 
-    std::remove("stderror.txt");
-    std::remove("surfaceConfiguration.prm");
-    std::remove("triangleAreas.txt");
-    std::remove("exposed.xyz");
-    std::remove("exposedIndices.txt");
-    
+      std::remove("stderror.txt");
+      std::remove("surfaceConfiguration.prm");
+      std::remove("triangleAreas.txt");
+      std::remove("exposed.xyz");
+      std::remove("exposedIndices.txt");
+    }
+
     std::string line;
     
     // Read in the vert file
