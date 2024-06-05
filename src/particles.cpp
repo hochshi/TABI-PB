@@ -49,6 +49,10 @@ Particles::Particles(const class Molecule& mol, const struct Params& params, str
     timers_.ctor.stop();
 };
 
+bool Particles::file_exists(const std::string& name) {
+  std::ifstream f(name.c_str());
+  return f.good();
+}
 
 void Particles::generate_particles(Params::Mesh mesh, double mesh_density, double probe_radius)
 {
@@ -81,6 +85,7 @@ void Particles::generate_particles(Params::Mesh mesh, double mesh_density, doubl
 
     NS_param_file.close();
     
+  if (not file_exists("triangulatedSurf.vert") or not file_exists("triangulatedSurf.face")) {
 #ifdef _WIN32
     std::system("NanoShaper.exe");
 #else
@@ -92,7 +97,8 @@ void Particles::generate_particles(Params::Mesh mesh, double mesh_density, doubl
     std::remove("triangleAreas.txt");
     std::remove("exposed.xyz");
     std::remove("exposedIndices.txt");
-    
+  }
+
     std::string line;
     
     // Read in the vert file

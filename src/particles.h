@@ -48,6 +48,7 @@ private:
 
     std::vector<std::size_t> order_;
     
+    bool file_exists(const std::string& name);
     void generate_particles(Params::Mesh, double, double);
     void update_source_term_on_host() const;
     
