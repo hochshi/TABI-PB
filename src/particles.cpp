@@ -84,8 +84,11 @@ void Particles::generate_particles(Params::Mesh mesh, double mesh_density, doubl
     NS_param_file << "Max_ses_patches_auxiliary_grid_2d_size = "     << 50               << std::endl;
 
     NS_param_file.close();
+
+    bool found_triangulatedSurf = false;
+    found_triangulatedSurf = ( file_exists("triangulatedSurf.vert") and file_exists("triangulatedSurf.face") );
     
-  if (not file_exists("triangulatedSurf.vert") or not file_exists("triangulatedSurf.face")) {
+  if (not found_triangulatedSurf ) {
 #ifdef _WIN32
     std::system("NanoShaper.exe");
 #else
@@ -160,8 +163,10 @@ void Particles::generate_particles(Params::Mesh mesh, double mesh_density, doubl
     face_file.close();
     
     std::remove("molecule.xyzr");
-    std::remove("triangulatedSurf.vert");
-    std::remove("triangulatedSurf.face");
+    if ( not found_triangulatedSurf ) {
+      std::remove("triangulatedSurf.vert");
+      std::remove("triangulatedSurf.face");
+    }
 
     area_.assign(num_, 0.);
     
