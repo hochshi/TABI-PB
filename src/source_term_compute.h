@@ -1,8 +1,6 @@
 #ifndef H_TABIPB_SOURCE_TERM_COMPUTE_STRUCT_H
 #define H_TABIPB_SOURCE_TERM_COMPUTE_STRUCT_H
 
-#include "timer.h"
-#include "elements.h"
 #include "molecule.h"
 #include "interp_pts.h"
 #include "tree_compute.h"

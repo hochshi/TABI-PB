@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.12)
 project(TABI-PB VERSION 3.0 LANGUAGES CXX C)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+cmake_policy(SET CMP0042 NEW) # MacOS RPATH on by default
+cmake_policy(SET CMP0048 NEW) # project() command manages the VERSION variables
+cmake_policy(SET CMP0054 NEW) # Only interpret if() arguments as variables or keywords when unquoted
+cmake_policy(SET CMP0077 NEW) # option() honors normal variables (i.e. does nothing if a normal variable with the same name exists)
+cmake_policy(SET CMP0083 NEW) # Pass flags needed for position-independent executables
+cmake_policy(SET CMP0091 NEW) # MSVC runtime library flags are selected by an abstraction (i.e. CMAKE_MSVC_RUNTIME_LIBRARY)
+set(CMAKE_MACOSX_RPATH 1)
+set(CMAKE_CXX_STANDARD 11)
+
+
+include(FetchContent)
+include(ExternalProject)
 
 ################################################################################
 # CMake modules
@@ -53,6 +66,34 @@ if (ENABLE_OPENMP)
     add_definitions(-DOPENMP_ENABLED)
 endif ()
 
+
+################################################################################
+# TinyPLY
+################################################################################
+option(ENABLE_PLY "PLY" OFF)
+
+if(ENABLE_PLY)
+
+  FetchContent_Declare( tinyply
+      GIT_REPOSITORY https://github.com/ddiakopoulos/tinyply.git
+      GIT_TAG 40aa4a0ae9e9c203e11893f78b8bcaf8a50e65f0 # 2.3.4
+  )
+
+  FetchContent_GetProperties(tinyply)
+  if(NOT tinyply_POPULATED)
+    FetchContent_Populate(tinyply)
+    add_library(tinyply STATIC
+      ${tinyply_SOURCE_DIR}/source/tinyply.cpp
+      ${tinyply_SOURCE_DIR}/source/tinyply.h
+    )
+  include_directories(${tinyply_SOURCE_DIR}/source)
+  endif()
+  
+  add_definitions(-DPLY_ENABLED)
+  link_libraries(
+    tinyply
+  )
+endif()
 
 ################################################################################
 # Getting nanoshaper binary
