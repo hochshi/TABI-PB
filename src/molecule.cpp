@@ -6,7 +6,7 @@
 #include <sstream>
 #include <iostream>
 #include <iomanip>
-#include <cmath>
+// #include <cmath>
 #include <cstddef>
 
 #include "molecule.h"

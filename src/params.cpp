@@ -20,6 +20,7 @@ Params::Params(char* infile)
     }
 
     output_vtk_ = false;
+    output_ply_ = false;
     output_csv_ = false;
     output_csv_headers_ = false;
     output_timers_ = false;
@@ -113,6 +114,7 @@ Params::Params(char* infile)
         
         } else if (param_token == "outdata") {
              if (param_value == "vtk") output_vtk_ = true;
+             if (param_value == "ply") output_ply_ = true;
              if (param_value == "csv") output_csv_ = true;
              if (param_value == "csv_headers") output_csv_headers_ = true;
              if (param_value == "timers") output_timers_ = true;

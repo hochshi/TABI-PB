@@ -24,7 +24,10 @@ Params::Params(TABIPBInput tabipbIn)
     nonpolar_ = false;
     precondition_ = false;
     
-    if (tabipbIn.output_data_ == 1) output_vtk_ = true;
+    if (tabipbIn.output_data_ == 1) {
+        output_vtk_ = true;
+        output_ply_ = true;
+    }
     output_csv_ = false;
     output_csv_headers_ = false;
     output_timers_ = false;

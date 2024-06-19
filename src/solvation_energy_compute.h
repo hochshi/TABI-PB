@@ -1,7 +1,7 @@
 #ifndef H_TABIPB_SOLVATION_ENERGY_COMPUTE_STRUCT_H
 #define H_TABIPB_SOLVATION_ENERGY_COMPUTE_STRUCT_H
 
-#include "timer.h"
+// #include "timer.h"
 #include "elements.h"
 #include "molecule.h"
 #include "interp_pts.h"

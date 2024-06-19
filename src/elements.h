@@ -5,7 +5,7 @@
 #include <cstdlib>
 
 #include "timer.h"
-#include "source_term_compute.h"
+// #include "source_term_compute.h"
 #include "molecule.h"
 #include "particles.h"
 
@@ -42,6 +42,8 @@ private:
     std::vector<double> source_charge_dz_;
     
     void generate_elements(Params::Mesh, double, double);
+    bool read_msms_file();
+    bool read_ply_file(const std::string & filepath);
     bool file_exists(const std::string& name);
     void update_source_term_on_host() const;
     

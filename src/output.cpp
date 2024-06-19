@@ -4,6 +4,10 @@
 #include <iomanip>
 #include <fstream>
 
+#ifdef PLY_ENABLED
+#include <tinyply.h>
+#endif
+
 #include "tabipb_timers.h"
 #include "coulombic_energy_compute.h"
 #include "solvation_energy_compute.h"
@@ -236,6 +240,7 @@ void Output::files(const struct Timers& timers) const
                                      "max: " << pot_normal_max_ << "\n" << std::endl << std::endl;
     
     if (params_.output_vtk_) Output::output_VTK();
+    if (params_.output_ply_) Output::output_PLY();
     if (params_.output_timers_) timers.print();
 
     if (params_.output_csv_headers_) {
@@ -274,6 +279,50 @@ void Output::files(const struct Timers& timers) const
     }
 }
 
+void Output::output_PLY() const
+{
+#ifdef PLY_ENABLED
+    using namespace tinyply;
+    struct double3 { double x, y, z; };
+    struct size_t3 { std::size_t x, y, z; };
+    std::vector<double3> vertices, normals;
+    std::vector<size_t3> faces;
+    std::vector<double> potential, potentialnormal;
+
+    vertices.reserve(elements_.num());
+    normals.reserve(elements_.num());
+    for (std::size_t i = 0; i < elements_.num(); ++i) {
+        vertices.push_back({elements_.x_ptr()[i], elements_.y_ptr()[i], elements_.z_ptr()[i]});
+        normals.push_back({elements_.nx_ptr()[i], elements_.ny_ptr()[i], elements_.nz_ptr()[i]});
+    }
+    
+    faces.reserve(elements_.num_faces());
+    for (std::size_t i = 0; i < elements_.num_faces(); ++i) {
+        faces.push_back({elements_.face_x_ptr()[i]-1, elements_.face_y_ptr()[i]-1, elements_.face_z_ptr()[i]-1});
+    }
+
+    potential.reserve(elements_.num());
+    potentialnormal.reserve(elements_.num());
+    
+    std::copy(potential_.begin(), potential_.begin() + potential_offset_, potential.begin());
+    std::copy(potential_.begin() + potential_offset_, potential_.end(), potentialnormal.begin());
+
+    std::filebuf fb_binary;
+    fb_binary.open(params_.output_prefix_ + ".ply", std::ios::out | std::ios::binary);
+    std::ostream outstream_binary(&fb_binary);
+    if (outstream_binary.fail()) throw std::runtime_error("failed to open " + params_.output_prefix_ + ".ply");
+
+    PlyFile ply_file;
+    
+    ply_file.add_properties_to_element("vertex", { "x", "y", "z" }, Type::FLOAT64, vertices.size(), reinterpret_cast<uint8_t*>(vertices.data()), Type::INVALID, 0);
+    ply_file.add_properties_to_element("vertex", { "nx", "ny", "nz" }, Type::FLOAT64, normals.size(), reinterpret_cast<uint8_t*>(normals.data()), Type::INVALID, 0);
+    ply_file.add_properties_to_element("vertex", { "P" }, Type::FLOAT64, potential.size(), reinterpret_cast<uint8_t*>(potential.data()), Type::INVALID, 0);
+    ply_file.add_properties_to_element("vertex", { "NP" }, Type::FLOAT64, potentialnormal.size(), reinterpret_cast<uint8_t*>(potentialnormal.data()), Type::INVALID, 0);
+    ply_file.add_properties_to_element("face", { "vertex_indices" }, Type::UINT32, faces.size(), reinterpret_cast<uint8_t*>(faces.data()), Type::UINT8, 3);
+
+    ply_file.write(outstream_binary, true);
+#endif
+}
 
 void Output::output_VTK() const
 {

@@ -1,10 +1,10 @@
 #ifndef H_OUTPUT_H
 #define H_OUTPUT_H
 
-#include <array>
+// #include <array>
 #include <vector>
 
-#include "solvation_energy_compute.h"
+// #include "solvation_energy_compute.h"
 #include "molecule.h"
 #include "elements.h"
 #include "params.h"
@@ -65,6 +65,7 @@ public:
     void finalize();
     void files(const struct Timers&) const;
     void output_VTK() const;
+    void output_PLY() const;
 };
 
 
