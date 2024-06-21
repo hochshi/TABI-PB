@@ -26,7 +26,8 @@ Elements::Elements(const class Molecule &mol, const struct Params &params,
   timers_.ctor.start();
 
   Elements::generate_elements(params_.mesh_, params_.mesh_density_,
-                              params_.mesh_probe_radius_);
+                              params_.mesh_probe_radius_,
+                              params_.input_mesh_prefix_);
 
   source_charge_.assign(num_, 0.);
   source_charge_dx_.assign(num_, 0.);
@@ -191,11 +192,11 @@ bool Elements::read_ply_file(const std::string &filepath) {
   return false;
 }
 
-bool Elements::read_msms_file() {
+bool Elements::read_msms_file(const std::string &input_mesh_prefix) {
   std::string line;
 
   // Read in the vert file
-  std::ifstream vert_file("triangulatedSurf.vert");
+  std::ifstream vert_file(input_mesh_prefix + ".vert");
   // Throw away first two lines
   std::getline(vert_file, line);
   std::getline(vert_file, line);
@@ -228,7 +229,7 @@ bool Elements::read_msms_file() {
   vert_file.close();
 
   // Read in the face file
-  std::ifstream face_file("triangulatedSurf.face");
+  std::ifstream face_file(input_mesh_prefix + ".face");
   // Throw away first two lines
   std::getline(face_file, line);
   std::getline(face_file, line);
@@ -257,8 +258,8 @@ bool Elements::read_msms_file() {
   return true;
 }
 
-void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
-                                 double probe_radius) {
+void Elements::write_nanaoshaper_config(Params::Mesh mesh, double mesh_density,
+                                        double probe_radius) {
   std::ofstream NS_param_file("surfaceConfiguration.prm");
 
   NS_param_file << "Grid_scale = " << mesh_density << std::endl;
@@ -270,7 +271,7 @@ void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
   NS_param_file << "Save_Mesh_PLY_Format = " << "true" << std::endl;
 #else
   NS_param_file << "Save_Mesh_MSMS_Format = " << "true" << std::endl;
-#endif // DPLY_ENABLED
+#endif // PLY_ENABLED
   NS_param_file << "Compute_Vertex_Normals = " << "true" << std::endl;
 
   if (mesh == Params::Mesh::SES)
@@ -295,15 +296,16 @@ void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
                 << std::endl;
 
   NS_param_file.close();
+}
 
-  bool nanoshaper_output_exists = false;
-#ifdef PLY_ENABLED
-  nanoshaper_output_exists = file_exists("triangulatedSurf.ply");
-#else
-  nanoshaper_output_exists = file_exists("triangulatedSurf.vert") and
-                             file_exists("triangulatedSurf.face");
-#endif // DPLY_ENABLED
-  if (not nanoshaper_output_exists) {
+void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
+                                 double probe_radius,
+                                 const std::string &input_mesh_prefix) {
+  std::string input_mesh_file_name = "";
+  if (input_mesh_prefix.empty()) {
+    // Gotta write the files and run NanoShaper
+    input_mesh_file_name = "triangulatedSurf";
+    write_nanaoshaper_config(mesh, mesh_density, probe_radius);
 #ifdef _WIN32
     std::system("NanoShaper.exe");
 #else
@@ -311,22 +313,26 @@ void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
 #endif
 
     std::remove("stderror.txt");
-    // std::remove("surfaceConfiguration.prm");
+    std::remove("surfaceConfiguration.prm");
     std::remove("triangleAreas.txt");
     std::remove("exposed.xyz");
     std::remove("exposedIndices.txt");
   }
 
 #ifdef PLY_ENABLED
-  read_ply_file("triangulatedSurf.ply");
+  read_ply_file(input_mesh_prefix + ".ply");
 #else
-  read_msms_file();
+  read_msms_file(input_mesh_prefix);
 #endif // PLY_ENABLED
 
-  // std::remove("molecule.xyzr");
-  if (not nanoshaper_output_exists) {
+  if (input_mesh_prefix.empty()) {
+#ifdef PLY_ENABLED
+    std::remove("triangulatedSurf.ply");
+#else
     std::remove("triangulatedSurf.vert");
     std::remove("triangulatedSurf.face");
+#endif // PLY_ENABLED
+    std::remove("molecule.xyzr");
   }
 
   area_.assign(num_, 0.);
@@ -335,11 +341,12 @@ void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
     std::array<std::size_t, 3> iface{face_x_[i], face_y_[i], face_z_[i]};
     std::array<std::array<double, 3>, 3> r;
 
-    #ifdef PLY_ENABLED // MSMS output shifts vertex indices by one for some weird reason.
+#ifdef PLY_ENABLED // MSMS output shifts vertex indices by one for some weird
+                   // reason.
     const int face_vertex_index_shift = 0;
-    #else
+#else
     const int face_vertex_index_shift = 1;
-    #endif // PLY_ENABLED
+#endif // PLY_ENABLED
 
     for (int ii = 0; ii < 3; ++ii) {
       r[0][ii] = x_[iface[ii] - face_vertex_index_shift];
