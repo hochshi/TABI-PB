@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <vector>
 
+#include "params.h"
 #include "timer.h"
 // #include "source_term_compute.h"
 #include "molecule.h"
@@ -40,8 +41,10 @@ private:
   std::vector<double> source_charge_dy_;
   std::vector<double> source_charge_dz_;
 
-  void write_nanaoshaper_config(Params::Mesh, double, double);
-  void generate_elements(Params::Mesh, double, double, const std::string &);
+  void write_nanaoshaper_config(Params::Mesh, Params::MeshFormat, double,
+                                double);
+  void generate_elements(Params::Mesh, Params::MeshFormat, double, double,
+                         const std::string &);
   bool read_msms_file(const std::string &);
   bool read_ply_file(const std::string &filepath);
   bool file_exists(const std::string &name);

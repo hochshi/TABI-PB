@@ -27,6 +27,9 @@ Params::Params(char *infile) {
   output_prefix_ = "output";
   input_mesh_prefix_ = "";
 
+  mesh_ = Params::Mesh::SES;
+  mesh_format_ = Params::MeshFormat::MSMS;
+
   std::string line;
 
   while (std::getline(paramfile, line)) {
@@ -92,6 +95,14 @@ Params::Params(char *infile) {
         std::exit(1);
       }
       mesh_ = it->second;
+
+    } else if (param_token == "mesh_format") {
+      auto it = mesh_format_table_.find(param_value);
+      if (it == mesh_format_table_.end()) {
+        std::cout << "invalid mesh value. exiting. " << std::endl;
+        std::exit(1);
+      }
+      mesh_format_ = it->second;
 
     } else if (param_token == "sdens") {
       mesh_density_ = std::stod(param_value);

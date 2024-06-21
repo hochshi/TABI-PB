@@ -11,15 +11,20 @@
 
 struct Params {
   enum Mesh { SES, SKIN };
+  enum MeshFormat { MSMS, PLY };
 
   std::unordered_map<std::string, enum Mesh> const mesh_table_ = {
       {"ses", Mesh::SES}, {"skin", Mesh::SKIN}};
+
+  std::unordered_map<std::string, enum MeshFormat> const mesh_format_table_ = {
+      {"msms", MeshFormat::MSMS}, {"ply", MeshFormat::PLY}};
 
   /* pqr file location */
   std::ifstream pqr_file_;
 
   /* mesh settings */
   enum Mesh mesh_;
+  enum MeshFormat mesh_format_;
   double mesh_density_;
   double mesh_probe_radius_;
 

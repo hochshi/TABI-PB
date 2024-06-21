@@ -1,3 +1,4 @@
+#include "params.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -25,8 +26,8 @@ Elements::Elements(const class Molecule &mol, const struct Params &params,
     : Particles(params), molecule_(mol), timers_(timers) {
   timers_.ctor.start();
 
-  Elements::generate_elements(params_.mesh_, params_.mesh_density_,
-                              params_.mesh_probe_radius_,
+  Elements::generate_elements(params_.mesh_, params_.mesh_format_,
+                              params_.mesh_density_, params_.mesh_probe_radius_,
                               params_.input_mesh_prefix_);
 
   source_charge_.assign(num_, 0.);
@@ -258,7 +259,9 @@ bool Elements::read_msms_file(const std::string &input_mesh_prefix) {
   return true;
 }
 
-void Elements::write_nanaoshaper_config(Params::Mesh mesh, double mesh_density,
+void Elements::write_nanaoshaper_config(Params::Mesh mesh,
+                                        Params::MeshFormat mesh_format,
+                                        double mesh_density,
                                         double probe_radius) {
   std::ofstream NS_param_file("surfaceConfiguration.prm");
 
@@ -267,11 +270,13 @@ void Elements::write_nanaoshaper_config(Params::Mesh mesh, double mesh_density,
   NS_param_file << "XYZR_FileName = " << "molecule.xyzr" << std::endl;
   NS_param_file << "Build_epsilon_maps = " << "false" << std::endl;
   NS_param_file << "Build_status_map = " << "false" << std::endl;
-#ifdef PLY_ENABLED
-  NS_param_file << "Save_Mesh_PLY_Format = " << "true" << std::endl;
-#else
-  NS_param_file << "Save_Mesh_MSMS_Format = " << "true" << std::endl;
-#endif // PLY_ENABLED
+
+  if (Params::MeshFormat::PLY == mesh_format) {
+    NS_param_file << "Save_Mesh_PLY_Format = " << "true" << std::endl;
+  } else {
+    NS_param_file << "Save_Mesh_MSMS_Format = " << "true" << std::endl;
+  }
+
   NS_param_file << "Compute_Vertex_Normals = " << "true" << std::endl;
 
   if (mesh == Params::Mesh::SES)
@@ -298,14 +303,15 @@ void Elements::write_nanaoshaper_config(Params::Mesh mesh, double mesh_density,
   NS_param_file.close();
 }
 
-void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
-                                 double probe_radius,
+void Elements::generate_elements(Params::Mesh mesh,
+                                 Params::MeshFormat mesh_format,
+                                 double mesh_density, double probe_radius,
                                  const std::string &input_mesh_prefix) {
   std::string input_mesh_file_name = "";
   if (input_mesh_prefix.empty()) {
     // Gotta write the files and run NanoShaper
     input_mesh_file_name = "triangulatedSurf";
-    write_nanaoshaper_config(mesh, mesh_density, probe_radius);
+    write_nanaoshaper_config(mesh, mesh_format, mesh_density, probe_radius);
 #ifdef _WIN32
     std::system("NanoShaper.exe");
 #else
@@ -319,34 +325,34 @@ void Elements::generate_elements(Params::Mesh mesh, double mesh_density,
     std::remove("exposedIndices.txt");
   }
 
-#ifdef PLY_ENABLED
-  read_ply_file(input_mesh_prefix + ".ply");
-#else
-  read_msms_file(input_mesh_prefix);
-#endif // PLY_ENABLED
+  if (Params::MeshFormat::PLY == mesh_format) {
+    read_ply_file(input_mesh_file_name + ".ply");
+  } else {
+    read_msms_file(input_mesh_file_name);
+  }
 
   if (input_mesh_prefix.empty()) {
-#ifdef PLY_ENABLED
-    std::remove("triangulatedSurf.ply");
-#else
-    std::remove("triangulatedSurf.vert");
-    std::remove("triangulatedSurf.face");
-#endif // PLY_ENABLED
+    if (Params::MeshFormat::PLY == mesh_format) {
+      std::remove("triangulatedSurf.ply");
+    } else {
+      std::remove("triangulatedSurf.vert");
+      std::remove("triangulatedSurf.face");
+    }
     std::remove("molecule.xyzr");
   }
 
   area_.assign(num_, 0.);
 
+  int face_vertex_index_shift = 1;
+  if (Params::MeshFormat::PLY == mesh_format) {
+    face_vertex_index_shift = 0;
+  } else {
+    face_vertex_index_shift = 1;
+  }
+
   for (std::size_t i = 0; i < num_faces_; ++i) {
     std::array<std::size_t, 3> iface{face_x_[i], face_y_[i], face_z_[i]};
     std::array<std::array<double, 3>, 3> r;
-
-#ifdef PLY_ENABLED // MSMS output shifts vertex indices by one for some weird
-                   // reason.
-    const int face_vertex_index_shift = 0;
-#else
-    const int face_vertex_index_shift = 1;
-#endif // PLY_ENABLED
 
     for (int ii = 0; ii < 3; ++ii) {
       r[0][ii] = x_[iface[ii] - face_vertex_index_shift];
