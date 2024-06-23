@@ -361,7 +361,7 @@ void Elements::generate_elements(Params::Mesh mesh,
     }
 
     for (int j = 0; j < 3; ++j) {
-      area_[iface[j] - 1] += triangle_area(r);
+      area_[iface[j] - face_vertex_index_shift] += triangle_area(r);
     }
   }
 
