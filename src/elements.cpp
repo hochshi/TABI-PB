@@ -323,6 +323,8 @@ void Elements::generate_elements(Params::Mesh mesh,
     std::remove("triangleAreas.txt");
     std::remove("exposed.xyz");
     std::remove("exposedIndices.txt");
+  } else {
+    input_mesh_file_name = input_mesh_prefix;
   }
 
   if (Params::MeshFormat::PLY == mesh_format) {
