@@ -319,11 +319,11 @@ void Elements::generate_elements(Params::Mesh mesh,
     std::system("NanoShaper");
 #endif
 
-    // std::remove("stderror.txt");
-    // std::remove("surfaceConfiguration.prm");
-    // std::remove("triangleAreas.txt");
-    // std::remove("exposed.xyz");
-    // std::remove("exposedIndices.txt");
+    std::remove("stderror.txt");
+    std::remove("surfaceConfiguration.prm");
+    std::remove("triangleAreas.txt");
+    std::remove("exposed.xyz");
+    std::remove("exposedIndices.txt");
   } else {
     input_mesh_file_name = input_mesh_prefix;
   }
@@ -334,15 +334,15 @@ void Elements::generate_elements(Params::Mesh mesh,
     read_msms_file(input_mesh_file_name);
   }
 
-  // if (input_mesh_prefix.empty()) {
-  //   if (Params::MeshFormat::PLY == mesh_format) {
-  //     std::remove("triangulatedSurf.ply");
-  //   } else {
-  //     std::remove("triangulatedSurf.vert");
-  //     std::remove("triangulatedSurf.face");
-  //   }
-  //   std::remove("molecule.xyzr");
-  // }
+  if (input_mesh_prefix.empty()) {
+    if (Params::MeshFormat::PLY == mesh_format) {
+      std::remove("triangulatedSurf.ply");
+    } else {
+      std::remove("triangulatedSurf.vert");
+      std::remove("triangulatedSurf.face");
+    }
+    std::remove("molecule.xyzr");
+  }
 
   area_.assign(num_, 0.);
 
