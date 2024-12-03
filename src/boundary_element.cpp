@@ -49,7 +49,7 @@ void BoundaryElement::run_GMRES()
     
     // These values are modified on return
     double residual   = 1e-4;
-    long int num_iter = 100;
+    long int num_iter = 1000;
 
     std::vector<double> work_vec(ldw * (restrt + 4));
     std::vector<double> h_vec   (ldh * (restrt + 2));

@@ -60,8 +60,8 @@ bool Elements::read_ply_file(const std::string &filepath) {
   struct double3 {
     double x, y, z;
   };
-  struct int3 {
-    int x, y, z;
+  struct uint3 {
+    uint32_t x, y, z;
   };
   std::unique_ptr<std::istream> file_stream;
   std::vector<uint8_t> byte_buffer;
@@ -179,9 +179,9 @@ bool Elements::read_ply_file(const std::string &filepath) {
       face_y_.reserve(num_faces_);
       face_z_.reserve(num_faces_);
       const size_t numFacesBytes = faces->buffer.size_bytes();
-      std::vector<int3> facesVec(faces->count);
+      std::vector<uint3> facesVec(faces->count);
       std::memcpy(facesVec.data(), faces->buffer.get(), numFacesBytes);
-      for (int3 &triplet : facesVec) {
+      for (uint3 &triplet : facesVec) {
         face_x_.push_back(static_cast<uint32_t>(triplet.x));
         face_y_.push_back(static_cast<uint32_t>(triplet.y));
         face_z_.push_back(static_cast<uint32_t>(triplet.z));

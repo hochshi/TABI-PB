@@ -284,9 +284,9 @@ void Output::output_PLY() const
 #ifdef PLY_ENABLED
     using namespace tinyply;
     struct double3 { double x, y, z; };
-    struct size_t3 { std::size_t x, y, z; };
+    struct uint32_t3 { uint32_t x, y, z; };
     std::vector<double3> vertices, normals;
-    std::vector<size_t3> faces;
+    std::vector<uint32_t3> faces;
     std::vector<double> potential, potentialnormal;
 
     vertices.reserve(elements_.num());
