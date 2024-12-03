@@ -298,7 +298,7 @@ void Output::output_PLY() const
     
     faces.reserve(elements_.num_faces());
     for (std::size_t i = 0; i < elements_.num_faces(); ++i) {
-        faces.push_back({elements_.face_x_ptr()[i]-1, elements_.face_y_ptr()[i]-1, elements_.face_z_ptr()[i]-1});
+        faces.push_back({elements_.face_x_ptr()[i], elements_.face_y_ptr()[i], elements_.face_z_ptr()[i]});
     }
 
     potential.reserve(elements_.num());

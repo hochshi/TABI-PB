@@ -20,9 +20,9 @@ private:
   std::size_t num_faces_;
   double surface_area_;
 
-  std::vector<std::size_t> face_x_;
-  std::vector<std::size_t> face_y_;
-  std::vector<std::size_t> face_z_;
+  std::vector<uint32_t> face_x_;
+  std::vector<uint32_t> face_y_;
+  std::vector<uint32_t> face_z_;
 
   std::vector<double> nx_;
   std::vector<double> ny_;
@@ -58,9 +58,9 @@ public:
   std::size_t num_faces() const { return num_faces_; };
   double surface_area() const { return surface_area_; };
 
-  const std::size_t *face_x_ptr() const { return face_x_.data(); };
-  const std::size_t *face_y_ptr() const { return face_y_.data(); };
-  const std::size_t *face_z_ptr() const { return face_z_.data(); };
+  const uint32_t *face_x_ptr() const { return face_x_.data(); };
+  const uint32_t *face_y_ptr() const { return face_y_.data(); };
+  const uint32_t *face_z_ptr() const { return face_z_.data(); };
 
   const double *nx_ptr() const { return nx_.data(); };
   const double *ny_ptr() const { return ny_.data(); };

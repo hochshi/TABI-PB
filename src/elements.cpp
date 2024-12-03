@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -181,9 +182,9 @@ bool Elements::read_ply_file(const std::string &filepath) {
       std::vector<int3> facesVec(faces->count);
       std::memcpy(facesVec.data(), faces->buffer.get(), numFacesBytes);
       for (int3 &triplet : facesVec) {
-        face_x_.push_back(static_cast<std::size_t>(triplet.x));
-        face_y_.push_back(static_cast<std::size_t>(triplet.y));
-        face_z_.push_back(static_cast<std::size_t>(triplet.z));
+        face_x_.push_back(static_cast<uint32_t>(triplet.x));
+        face_y_.push_back(static_cast<uint32_t>(triplet.y));
+        face_z_.push_back(static_cast<uint32_t>(triplet.z));
       }
     }
     return true;
@@ -354,7 +355,7 @@ void Elements::generate_elements(Params::Mesh mesh,
   }
 
   for (std::size_t i = 0; i < num_faces_; ++i) {
-    std::array<std::size_t, 3> iface{face_x_[i], face_y_[i], face_z_[i]};
+    std::array<uint32_t, 3> iface{face_x_[i], face_y_[i], face_z_[i]};
     std::array<std::array<double, 3>, 3> r;
 
     for (int ii = 0; ii < 3; ++ii) {
