@@ -42,14 +42,14 @@ void BoundaryElement::run_GMRES()
 {
     timers_.run_GMRES.start();
 
-    long int restrt = 10;
+    long int restrt = params_.gmres_restart_;
     long int length = output_.potential().size();
     long int ldw    = length;
     long int ldh    = restrt + 1;
     
     // These values are modified on return
-    double residual   = 1e-4;
-    long int num_iter = 1000;
+    double residual   = params_.gmres_residual_;
+    long int num_iter = params_.gmres_num_iter_;
 
     std::vector<double> work_vec(ldw * (restrt + 4));
     std::vector<double> h_vec   (ldh * (restrt + 2));

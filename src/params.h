@@ -47,6 +47,11 @@ struct Params {
   /* preconditioning */
   bool precondition_;
 
+  /* GMRES */
+  long int gmres_restart_ = 10;
+  double gmres_residual_   = 1e-4;
+  long int gmres_num_iter_ = 1000;
+
   /* nonpolar energy */
   int nonpolar_;
 
