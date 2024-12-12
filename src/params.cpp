@@ -88,6 +88,27 @@ Params::Params(char *infile) {
         std::exit(1);
       }
 
+    } else if (param_token == "gmres_restart") {
+      gmres_restart_ = std::stoi(param_value);
+      if (gmres_restart_ <= 0) {
+        std::cout << "invalid GMRES restart value. exiting. " << std::endl;
+        std::exit(1);
+      }
+
+    } else if (param_token == "gmres_residual") {
+      gmres_residual_ = std::stod(param_value);
+      if (gmres_residual_ < 0. || gmres_residual_ > 1.) {
+        std::cout << "invalid gmres_residual value. exiting. " << std::endl;
+        std::exit(1);
+      }
+
+    } else if (param_token == "gmres_num_iter") {
+      gmres_num_iter_ = std::stoi(param_value);
+      if (gmres_num_iter_ <= 0) {
+        std::cout << "invalid gmres_num_iter value. exiting. " << std::endl;
+        std::exit(1);
+      }
+
     } else if (param_token == "mesh") {
       auto it = mesh_table_.find(param_value);
       if (it == mesh_table_.end()) {
