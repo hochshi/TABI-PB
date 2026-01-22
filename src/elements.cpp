@@ -199,61 +199,75 @@ bool Elements::read_msms_file(const std::string &input_mesh_prefix) {
   std::string line;
 
   // Read in the vert file
+  std::cout << "Reading " << input_mesh_prefix << ".vert" << std::endl;
   std::ifstream vert_file(input_mesh_prefix + ".vert");
   // Throw away first two lines
   std::getline(vert_file, line);
   std::getline(vert_file, line);
 
   std::getline(vert_file, line);
-  num_ = std::stoul(line);
+  try {
+    num_ = std::stoul(line);
+    std::cout << "Reading " << num_ <<" vertices" << std::endl;
 
-  x_.reserve(num_);
-  y_.reserve(num_);
-  z_.reserve(num_);
-  nx_.reserve(num_);
-  ny_.reserve(num_);
-  nz_.reserve(num_);
+    x_.reserve(num_);
+    y_.reserve(num_);
+    z_.reserve(num_);
+    nx_.reserve(num_);
+    ny_.reserve(num_);
+    nz_.reserve(num_);
 
-  while (std::getline(vert_file, line)) {
+    while (std::getline(vert_file, line)) {
 
-    std::istringstream iss(line);
-    std::vector<std::string> tokenized_line{
-        std::istream_iterator<std::string>{iss},
-        std::istream_iterator<std::string>{}};
+      std::istringstream iss(line);
+      std::vector<std::string> tokenized_line{
+          std::istream_iterator<std::string>{iss},
+          std::istream_iterator<std::string>{}};
 
-    x_.push_back(std::stod(tokenized_line[0]));
-    y_.push_back(std::stod(tokenized_line[1]));
-    z_.push_back(std::stod(tokenized_line[2]));
-    nx_.push_back(std::stod(tokenized_line[3]));
-    ny_.push_back(std::stod(tokenized_line[4]));
-    nz_.push_back(std::stod(tokenized_line[5]));
+      x_.push_back(std::stod(tokenized_line[0]));
+      y_.push_back(std::stod(tokenized_line[1]));
+      z_.push_back(std::stod(tokenized_line[2]));
+      nx_.push_back(std::stod(tokenized_line[3]));
+      ny_.push_back(std::stod(tokenized_line[4]));
+      nz_.push_back(std::stod(tokenized_line[5]));
+  }
+  } catch (std::invalid_argument const& ex) {
+     std::cout << "Vert: line: |" << line << "| caused invalid argument exception" << std::endl;
+     throw;
   }
 
   vert_file.close();
 
   // Read in the face file
+  std::cout << "Reading " << input_mesh_prefix << ".face" << std::endl;
   std::ifstream face_file(input_mesh_prefix + ".face");
   // Throw away first two lines
   std::getline(face_file, line);
   std::getline(face_file, line);
 
   std::getline(face_file, line);
-  num_faces_ = std::stoul(line);
+  try{
+    num_faces_ = std::stoul(line);
+    std::cout << "Reading " << num_faces_ <<" faces" << std::endl;
 
-  face_x_.reserve(num_faces_);
-  face_y_.reserve(num_faces_);
-  face_z_.reserve(num_faces_);
+    face_x_.reserve(num_faces_);
+    face_y_.reserve(num_faces_);
+    face_z_.reserve(num_faces_);
 
-  while (std::getline(face_file, line)) {
+    while (std::getline(face_file, line)) {
 
-    std::istringstream iss(line);
-    std::vector<std::string> tokenized_line{
-        std::istream_iterator<std::string>{iss},
-        std::istream_iterator<std::string>{}};
+      std::istringstream iss(line);
+      std::vector<std::string> tokenized_line{
+          std::istream_iterator<std::string>{iss},
+          std::istream_iterator<std::string>{}};
 
-    face_x_.push_back(std::stoul(tokenized_line[0]));
-    face_y_.push_back(std::stoul(tokenized_line[1]));
-    face_z_.push_back(std::stoul(tokenized_line[2]));
+      face_x_.push_back(std::stoul(tokenized_line[0]));
+      face_y_.push_back(std::stoul(tokenized_line[1]));
+      face_z_.push_back(std::stoul(tokenized_line[2]));
+  }
+  } catch (std::invalid_argument const& ex) {
+     std::cout << "Face: line: |" << line << "| caused invalid argument exception" << std::endl;
+     throw;
   }
 
   face_file.close();
