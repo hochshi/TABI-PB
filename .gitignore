@@ -2,3 +2,7 @@ msms
 build/
 examples/surface_potential.*
 .DS_store
+.cache/
+.vscode/
+compile_commands.json
+examples/
