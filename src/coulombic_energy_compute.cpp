@@ -438,6 +438,7 @@ void CoulombicEnergyCompute::upward_pass()
             double denominator_x = 0.;
             double denominator_y = 0.;
             double denominator_z = 0.;
+            int ex = -1, ey = -1, ez = -1;
             
             double xx = mol_x_ptr[particle_start + i];
             double yy = mol_y_ptr[particle_start + i];
@@ -446,7 +447,7 @@ void CoulombicEnergyCompute::upward_pass()
             // because there's a reduction over exact_idx[i], this loop carries a
             // backward dependence and won't actually parallelize
 #ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:denominator_x,denominator_y,denominator_z)
+            #pragma acc loop reduction(+:denominator_x,denominator_y,denominator_z) reduction(max:ex,ey,ez)
 #endif
             for (int j = 0; j < num_mol_interp_pts_per_node; ++j) {
             
@@ -458,10 +459,18 @@ void CoulombicEnergyCompute::upward_pass()
                 denominator_y += weights_ptr[j] / dist_y;
                 denominator_z += weights_ptr[j] / dist_z;
                 
-                if (std::abs(dist_x) < std::numeric_limits<double>::min()) exact_idx_x_ptr[i] = j;
-                if (std::abs(dist_y) < std::numeric_limits<double>::min()) exact_idx_y_ptr[i] = j;
-                if (std::abs(dist_z) < std::numeric_limits<double>::min()) exact_idx_z_ptr[i] = j;
+                const int cx = (std::abs(dist_x) < std::numeric_limits<double>::min()) ? j : -1;
+                const int cy = (std::abs(dist_y) < std::numeric_limits<double>::min()) ? j : -1;
+                const int cz = (std::abs(dist_z) < std::numeric_limits<double>::min()) ? j : -1;
+
+                ex = (ex > cx) ? ex : cx;
+                ey = (ey > cy) ? ey : cy;
+                ez = (ez > cz) ? ez : cz;
             }
+
+            exact_idx_x_ptr[i] = ex;
+            exact_idx_y_ptr[i] = ey;
+            exact_idx_z_ptr[i] = ez;
             
             denominator_ptr[i] = 1.0;
             if (exact_idx_x_ptr[i] == -1) denominator_ptr[i] /= denominator_x;
