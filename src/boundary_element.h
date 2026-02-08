@@ -36,6 +36,17 @@ private:
     std::vector<double> interp_potential_dx_;
     std::vector<double> interp_potential_dy_;
     std::vector<double> interp_potential_dz_;
+
+    std::vector<double> potential_temp_;
+    std::vector<double> weights_;
+    std::vector<int> exact_idx_x_;
+    std::vector<int> exact_idx_y_;
+    std::vector<int> exact_idx_z_;
+    std::vector<double> denominator_;
+
+    std::vector<std::size_t> node_particles_begin_;
+    std::vector<std::size_t> node_particles_end_;
+    std::vector<std::size_t> element_node_idx_;
     
     /* output */
     double solvation_energy_;
@@ -70,6 +81,13 @@ private:
             
     void cluster_cluster_interact(double* __restrict potential,
             std::size_t target_node_idx, std::size_t source_node_idx);
+
+    void particle_particle_interact_all(double* __restrict potential,
+                              const double* __restrict potential_old);
+    void particle_cluster_interact_all(double* __restrict potential,
+                              const double* __restrict potential_old);
+    void cluster_particle_interact_all(double* __restrict potential);
+    void cluster_cluster_interact_all(double* __restrict potential);
             
     void upward_pass();
     void downward_pass(double* __restrict potential);

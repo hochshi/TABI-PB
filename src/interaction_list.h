@@ -2,6 +2,7 @@
 #define H_TABIPB_INTERACTION_LIST_STRUCT_H
 
 #include <cstddef>
+#include <vector>
 
 #include "timer.h"
 #include "tree.h"
@@ -22,9 +23,20 @@ private:
     std::vector<std::vector<std::size_t>> particle_cluster_;
     std::vector<std::vector<std::size_t>> cluster_particle_;
     std::vector<std::vector<std::size_t>> cluster_cluster_;
+
+    std::vector<std::size_t> particle_particle_flat_;
+    std::vector<std::size_t> particle_cluster_flat_;
+    std::vector<std::size_t> cluster_particle_flat_;
+    std::vector<std::size_t> cluster_cluster_flat_;
+
+    std::vector<std::size_t> particle_particle_offsets_;
+    std::vector<std::size_t> particle_cluster_offsets_;
+    std::vector<std::size_t> cluster_particle_offsets_;
+    std::vector<std::size_t> cluster_cluster_offsets_;
     
     void build_BLTC_lists(std::size_t batch_idx, std::size_t node_idx);
     void build_BLDTT_lists(std::size_t target_node_idx, std::size_t source_node_idx);
+    void build_flattened_lists();
     
 public:
     InteractionList(const class Tree&, const int degree, const double theta, struct Timers_InteractionList&);
@@ -36,6 +48,16 @@ public:
     const std::vector<std::size_t>& particle_cluster (std::size_t idx) const { return particle_cluster_ [idx]; }
     const std::vector<std::size_t>& cluster_particle (std::size_t idx) const { return cluster_particle_ [idx]; }
     const std::vector<std::size_t>& cluster_cluster  (std::size_t idx) const { return cluster_cluster_  [idx]; }
+
+    const std::vector<std::size_t>& particle_particle_flat() const { return particle_particle_flat_; }
+    const std::vector<std::size_t>& particle_cluster_flat()  const { return particle_cluster_flat_; }
+    const std::vector<std::size_t>& cluster_particle_flat()  const { return cluster_particle_flat_; }
+    const std::vector<std::size_t>& cluster_cluster_flat()   const { return cluster_cluster_flat_; }
+
+    const std::vector<std::size_t>& particle_particle_offsets() const { return particle_particle_offsets_; }
+    const std::vector<std::size_t>& particle_cluster_offsets()  const { return particle_cluster_offsets_; }
+    const std::vector<std::size_t>& cluster_particle_offsets()  const { return cluster_particle_offsets_; }
+    const std::vector<std::size_t>& cluster_cluster_offsets()   const { return cluster_cluster_offsets_; }
 };
 
 

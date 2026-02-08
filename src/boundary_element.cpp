@@ -35,6 +35,39 @@ BoundaryElement::BoundaryElement(class Elements& elements, const class Interpola
     interp_potential_dy_.resize(num_charges_);
     interp_potential_dz_.resize(num_charges_);
 
+    potential_temp_.resize(potential_.size());
+
+    weights_.resize(interp_pts_.num_interp_pts_per_node());
+    for (std::size_t i = 0; i < weights_.size(); ++i) {
+        double w = ((i % 2 == 0) ? 1.0 : -1.0);
+        if (i == 0 || i + 1 == weights_.size()) w *= 0.5;
+        weights_[i] = w;
+    }
+
+    std::size_t max_particles = elements_.num();
+    exact_idx_x_.resize(max_particles);
+    exact_idx_y_.resize(max_particles);
+    exact_idx_z_.resize(max_particles);
+    denominator_.resize(max_particles);
+
+    std::size_t num_nodes = tree_.num_nodes();
+    node_particles_begin_.resize(num_nodes);
+    node_particles_end_.resize(num_nodes);
+    for (std::size_t i = 0; i < num_nodes; ++i) {
+        auto idxs = tree_.node_particle_idxs(i);
+        node_particles_begin_[i] = idxs[0];
+        node_particles_end_[i] = idxs[1];
+    }
+
+    element_node_idx_.resize(elements_.num());
+    for (std::size_t node_idx = 0; node_idx < num_nodes; ++node_idx) {
+        std::size_t begin = node_particles_begin_[node_idx];
+        std::size_t end = node_particles_end_[node_idx];
+        for (std::size_t j = begin; j < end; ++j) {
+            element_node_idx_[j] = node_idx;
+        }
+    }
+
     timers_.ctor.stop();
 }
           
@@ -87,7 +120,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     double potential_coeff_2 = 0.5 * (1. + 1. / params_.phys_eps_);
     
     std::size_t potential_num = potential_.size();
-    auto* potential_temp = (double *)std::malloc(potential_num * sizeof(double));
+    double* potential_temp = potential_temp_.data();
     std::memcpy(potential_temp, potential_new, potential_num * sizeof(double));
     std::memset(potential_new, 0, potential_num * sizeof(double));
 
@@ -102,31 +135,9 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     elements_.compute_charges(potential_old);
     BoundaryElement::upward_pass();
 
-#ifdef OPENMP_ENABLED
-    #pragma omp parallel for
-#endif
-    for (std::size_t target_node_idx = 0; target_node_idx < tree_.num_nodes(); ++target_node_idx) {
-        
-        for (auto source_node_idx : interaction_list_.particle_particle(target_node_idx))
-            BoundaryElement::particle_particle_interact(potential_new, potential_old,
-                    tree_.node_particle_idxs(target_node_idx), tree_.node_particle_idxs(source_node_idx));
-    
-        for (auto source_node_idx : interaction_list_.particle_cluster(target_node_idx))
-            BoundaryElement::particle_cluster_interact(potential_new, 
-                    tree_.node_particle_idxs(target_node_idx), source_node_idx);
-        
-        for (auto source_node_idx : interaction_list_.cluster_particle(target_node_idx))
-            BoundaryElement::cluster_particle_interact(potential_new, 
-                    target_node_idx, tree_.node_particle_idxs(source_node_idx));
-        
-        for (auto source_node_idx : interaction_list_.cluster_cluster(target_node_idx))
-            BoundaryElement::cluster_cluster_interact(potential_new, target_node_idx, source_node_idx);
-    }
+    BoundaryElement::particle_cluster_interact_all(potential_new, potential_old);
+    BoundaryElement::cluster_cluster_interact_all(potential_new);
 
-#ifdef OPENACC_ENABLED
-    #pragma acc wait
-#endif
-    
 #ifdef OPENACC_ENABLED
     #pragma acc wait
 #endif
@@ -146,8 +157,6 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
         potential_new[i] =  beta * potential_temp[i]
                 + alpha * (potential_coeff_2 * potential_old[i] - potential_new[i]);
                 
-    std::free(potential_temp);
-
     timers_.matrix_vector.stop();
 }
 
@@ -182,8 +191,7 @@ void BoundaryElement::particle_particle_interact(double* __restrict potential,
     std::size_t num_elements = elements_.num();
 
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(elements_x_ptr,  elements_y_ptr,  elements_z_ptr, \
+    #pragma acc parallel loop present(elements_x_ptr,  elements_y_ptr,  elements_z_ptr, \
                                       elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
                                       elements_area_ptr, potential, potential_old)
 #endif
@@ -249,15 +257,11 @@ void BoundaryElement::particle_particle_interact(double* __restrict potential,
             }
         }
         
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j]                += pot_temp_1;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j + num_elements] += pot_temp_2;
@@ -285,6 +289,7 @@ void BoundaryElement::particle_cluster_interact(double* __restrict potential,
     
     double eps    = params_.phys_eps_;
     double kappa  = params_.phys_kappa_;
+    double kappa2 = params_.phys_kappa2_;
     
     const double* __restrict elements_x_ptr   = elements_.x_ptr();
     const double* __restrict elements_y_ptr   = elements_.y_ptr();
@@ -305,8 +310,7 @@ void BoundaryElement::particle_cluster_interact(double* __restrict potential,
     const double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
     
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+    #pragma acc parallel loop present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
                     targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
                     clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
                     clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
@@ -345,13 +349,14 @@ void BoundaryElement::particle_cluster_interact(double* __restrict potential,
             double r3inv = rinv  * rinv * rinv;
             double r5inv = r3inv * rinv * rinv;
 
-            double expkr   =  std::exp(-kappa * r);
-            double d1term  =  r3inv * expkr * (1. + (kappa * r));
+            double kappa_r = kappa * r;
+            double expkr   =  std::exp(-kappa_r);
+            double d1term  =  r3inv * expkr * (1. + kappa_r);
             double d1term1 = -r3inv + d1term * eps;
             double d1term2 = -r3inv + d1term / eps;
-            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa * r)
-                                                   + (kappa * kappa * r2)));
-            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa * r));
+            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                   + (kappa2 * r2)));
+            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
 
             pot_comp_    += (rinv * (1. - expkr) * (clusters_q_ptr   [kk])
                                       + d1term1 * (clusters_q_dx_ptr[kk] * dx
@@ -376,15 +381,11 @@ void BoundaryElement::particle_cluster_interact(double* __restrict potential,
         }
         }
         
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j]                += targets_q_ptr   [j] * pot_comp_;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j + num_elements] += targets_q_dx_ptr[j] * pot_comp_dx
@@ -413,6 +414,7 @@ void BoundaryElement::cluster_particle_interact(double* __restrict potential,
     
     double eps    = params_.phys_eps_;
     double kappa  = params_.phys_kappa_;
+    double kappa2 = params_.phys_kappa2_;
     
     const double* __restrict clusters_x_ptr    = interp_pts_.interp_x_ptr();
     const double* __restrict clusters_y_ptr    = interp_pts_.interp_y_ptr();
@@ -433,8 +435,7 @@ void BoundaryElement::cluster_particle_interact(double* __restrict potential,
     const double* __restrict sources_q_dz_ptr  = elements_.source_charge_dz_ptr();
     
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+    #pragma acc parallel loop collapse(3) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
                     clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
                     elements_x_ptr, elements_y_ptr, elements_z_ptr, \
                     sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
@@ -473,13 +474,14 @@ void BoundaryElement::cluster_particle_interact(double* __restrict potential,
             double r3inv = rinv  * rinv * rinv;
             double r5inv = r3inv * rinv * rinv;
 
-            double expkr   =  std::exp(-kappa * r);
-            double d1term  =  r3inv * expkr * (1. + (kappa * r));
+            double kappa_r = kappa * r;
+            double expkr   =  std::exp(-kappa_r);
+            double d1term  =  r3inv * expkr * (1. + kappa_r);
             double d1term1 = -r3inv + d1term * eps;
             double d1term2 = -r3inv + d1term / eps;
-            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa * r)
-                                                   + (kappa * kappa * r2)));
-            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa * r));
+            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                   + (kappa2 * r2)));
+            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
 
             pot_comp_    += (rinv * (1. - expkr) * (sources_q_ptr   [k])
                                       + d1term1 * (sources_q_dx_ptr[k] * dx
@@ -502,27 +504,19 @@ void BoundaryElement::cluster_particle_interact(double* __restrict potential,
                           +  sources_q_dz_ptr[k]  * (dz * dz * d2term + d3term)));
         }
     
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_ptr   [jj] += pot_comp_;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dx_ptr[jj] += pot_comp_dx;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dy_ptr[jj] += pot_comp_dy;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dz_ptr[jj] += pot_comp_dz;
@@ -551,6 +545,7 @@ void BoundaryElement::cluster_cluster_interact(double* __restrict potential,
     
     double eps    = params_.phys_eps_;
     double kappa  = params_.phys_kappa_;
+    double kappa2 = params_.phys_kappa2_;
     
     const double* __restrict clusters_x_ptr    = interp_pts_.interp_x_ptr();
     const double* __restrict clusters_y_ptr    = interp_pts_.interp_y_ptr();
@@ -567,8 +562,7 @@ void BoundaryElement::cluster_cluster_interact(double* __restrict potential,
     const double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
 
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+    #pragma acc parallel loop collapse(3) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
                     clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
                     clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
                     potential)
@@ -612,13 +606,14 @@ void BoundaryElement::cluster_cluster_interact(double* __restrict potential,
             double r3inv = rinv  * rinv * rinv;
             double r5inv = r3inv * rinv * rinv;
 
-            double expkr   =  std::exp(-kappa * r);
-            double d1term  =  r3inv * expkr * (1. + (kappa * r));
+            double kappa_r = kappa * r;
+            double expkr   =  std::exp(-kappa_r);
+            double d1term  =  r3inv * expkr * (1. + kappa_r);
             double d1term1 = -r3inv + d1term * eps;
             double d1term2 = -r3inv + d1term / eps;
-            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa * r)
-                                                   + (kappa * kappa * r2)));
-            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa * r));
+            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                   + (kappa2 * r2)));
+            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
 
             pot_comp_    += (rinv * (1. - expkr) * (clusters_q_ptr   [kk])
                                       + d1term1 * (clusters_q_dx_ptr[kk] * dx
@@ -643,32 +638,1602 @@ void BoundaryElement::cluster_cluster_interact(double* __restrict potential,
         }
         }
     
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_ptr   [jj] += pot_comp_;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dx_ptr[jj] += pot_comp_dx;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dy_ptr[jj] += pot_comp_dy;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dz_ptr[jj] += pot_comp_dz;
     }
     }
+    }
+
+    timers_.cluster_cluster_interact.stop();
+}
+
+
+void BoundaryElement::particle_particle_interact_all(double* __restrict potential,
+                                                     const double* __restrict potential_old)
+{
+    timers_.particle_particle_interact.start();
+
+    double eps    = params_.phys_eps_;
+    double kappa  = params_.phys_kappa_;
+    double kappa2 = params_.phys_kappa2_;
+
+    const double* __restrict elements_x_ptr    = elements_.x_ptr();
+    const double* __restrict elements_y_ptr    = elements_.y_ptr();
+    const double* __restrict elements_z_ptr    = elements_.z_ptr();
+
+    const double* __restrict elements_nx_ptr   = elements_.nx_ptr();
+    const double* __restrict elements_ny_ptr   = elements_.ny_ptr();
+    const double* __restrict elements_nz_ptr   = elements_.nz_ptr();
+
+    const double* __restrict elements_area_ptr = elements_.area_ptr();
+
+    const std::size_t* __restrict node_begin_ptr = node_particles_begin_.data();
+    const std::size_t* __restrict node_end_ptr   = node_particles_end_.data();
+
+    const auto& pp_offsets = interaction_list_.particle_particle_offsets();
+    const auto& pp_sources = interaction_list_.particle_particle_flat();
+    const std::size_t* __restrict offsets_ptr = pp_offsets.data();
+    const std::size_t* __restrict sources_ptr = pp_sources.data();
+
+    std::size_t num_nodes = node_particles_begin_.size();
+    std::size_t num_elements = elements_.num();
+
+#ifdef OPENACC_ENABLED
+    std::size_t offsets_num = pp_offsets.size();
+    std::size_t sources_num = pp_sources.size();
+    #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                           elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
+                                           elements_area_ptr, potential, potential_old, \
+                                           node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
+                                           offsets_ptr[0:offsets_num], sources_ptr[0:sources_num])
+#elif defined(OPENMP_ENABLED)
+    #pragma omp parallel for
+#endif
+    for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
+        std::size_t target_begin = node_begin_ptr[target_node_idx];
+        std::size_t target_end   = node_end_ptr[target_node_idx];
+
+        std::size_t src_start = offsets_ptr[target_node_idx];
+        std::size_t src_end   = offsets_ptr[target_node_idx + 1];
+
+#ifdef OPENACC_ENABLED
+        #pragma acc loop vector
+#endif
+        for (std::size_t j = target_begin; j < target_end; ++j) {
+            double target_x = elements_x_ptr[j];
+            double target_y = elements_y_ptr[j];
+            double target_z = elements_z_ptr[j];
+
+            double target_nx = elements_nx_ptr[j];
+            double target_ny = elements_ny_ptr[j];
+            double target_nz = elements_nz_ptr[j];
+
+            double pot_temp_1 = 0.;
+            double pot_temp_2 = 0.;
+
+            for (std::size_t s = src_start; s < src_end; ++s) {
+                std::size_t source_node = sources_ptr[s];
+                std::size_t source_begin = node_begin_ptr[source_node];
+                std::size_t source_end   = node_end_ptr[source_node];
+
+                for (std::size_t k = source_begin; k < source_end; ++k) {
+                    double source_x = elements_x_ptr[k];
+                    double source_y = elements_y_ptr[k];
+                    double source_z = elements_z_ptr[k];
+
+                    double source_nx = elements_nx_ptr[k];
+                    double source_ny = elements_ny_ptr[k];
+                    double source_nz = elements_nz_ptr[k];
+                    double source_area = elements_area_ptr[k];
+
+                    double potential_old_0 = potential_old[k];
+                    double potential_old_1 = potential_old[k + num_elements];
+
+                    double dist_x = source_x - target_x;
+                    double dist_y = source_y - target_y;
+                    double dist_z = source_z - target_z;
+                    double r = std::sqrt(dist_x * dist_x + dist_y * dist_y + dist_z * dist_z);
+
+                    if (r > 0) {
+                        double one_over_r = 1. / r;
+                        double G0 = constants::ONE_OVER_4PI * one_over_r;
+                        double kappa_r = kappa * r;
+                        double exp_kappa_r = std::exp(-kappa_r);
+                        double Gk = exp_kappa_r * G0;
+
+                        double source_cos = (source_nx * dist_x + source_ny * dist_y + source_nz * dist_z) * one_over_r;
+                        double target_cos = (target_nx * dist_x + target_ny * dist_y + target_nz * dist_z) * one_over_r;
+
+                        double tp1 = G0 * one_over_r;
+                        double tp2 = (1. + kappa_r) * exp_kappa_r;
+
+                        double dot_tqsq = source_nx * target_nx + source_ny * target_ny + source_nz * target_nz;
+                        double G3 = (dot_tqsq - 3. * target_cos * source_cos) * one_over_r * tp1;
+                        double G4 = tp2 * G3 - kappa2 * target_cos * source_cos * Gk;
+
+                        double L1 = source_cos  * tp1 * (1. - tp2 * eps);
+                        double L2 = G0 - Gk;
+                        double L3 = G4 - G3;
+                        double L4 = target_cos * tp1 * (1. - tp2 / eps);
+
+                        pot_temp_1 += (L1 * potential_old_0 + L2 * potential_old_1) * source_area;
+                        pot_temp_2 += (L3 * potential_old_0 + L4 * potential_old_1) * source_area;
+                    }
+                }
+            }
+
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            potential[j]                += pot_temp_1;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            potential[j + num_elements] += pot_temp_2;
+        }
+    }
+
+    timers_.particle_particle_interact.stop();
+}
+
+
+void BoundaryElement::particle_cluster_interact_all(double* __restrict potential,
+                                                    const double* __restrict potential_old)
+{
+    timers_.particle_cluster_interact.start();
+
+    std::size_t num_elements = elements_.num();
+    int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
+    int num_charges_per_node = num_charges_per_node_;
+    constexpr int kMaxInterpPts = 16;
+    constexpr int kBatchedMaxInterpPts = 8;
+    constexpr int kTargetElemTile = 32;
+
+    double eps    = params_.phys_eps_;
+    double kappa  = params_.phys_kappa_;
+    double kappa2 = params_.phys_kappa2_;
+
+    const double* __restrict elements_x_ptr   = elements_.x_ptr();
+    const double* __restrict elements_y_ptr   = elements_.y_ptr();
+    const double* __restrict elements_z_ptr   = elements_.z_ptr();
+    const double* __restrict elements_nx_ptr  = elements_.nx_ptr();
+    const double* __restrict elements_ny_ptr  = elements_.ny_ptr();
+    const double* __restrict elements_nz_ptr  = elements_.nz_ptr();
+    const double* __restrict elements_area_ptr = elements_.area_ptr();
+
+    const double* __restrict targets_q_ptr     = elements_.target_charge_ptr();
+    const double* __restrict targets_q_dx_ptr  = elements_.target_charge_dx_ptr();
+    const double* __restrict targets_q_dy_ptr  = elements_.target_charge_dy_ptr();
+    const double* __restrict targets_q_dz_ptr  = elements_.target_charge_dz_ptr();
+
+    const double* __restrict clusters_x_ptr    = interp_pts_.interp_x_ptr();
+    const double* __restrict clusters_y_ptr    = interp_pts_.interp_y_ptr();
+    const double* __restrict clusters_z_ptr    = interp_pts_.interp_z_ptr();
+
+    const double* __restrict clusters_q_ptr    = interp_charge_.data();
+    const double* __restrict clusters_q_dx_ptr = interp_charge_dx_.data();
+    const double* __restrict clusters_q_dy_ptr = interp_charge_dy_.data();
+    const double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
+
+    const std::size_t* __restrict node_begin_ptr = node_particles_begin_.data();
+    const std::size_t* __restrict node_end_ptr   = node_particles_end_.data();
+
+    const auto& pp_offsets = interaction_list_.particle_particle_offsets();
+    const auto& pp_sources = interaction_list_.particle_particle_flat();
+    const auto& pc_offsets = interaction_list_.particle_cluster_offsets();
+    const auto& pc_sources = interaction_list_.particle_cluster_flat();
+    const std::size_t* __restrict pp_offsets_ptr = pp_offsets.data();
+    const std::size_t* __restrict pp_sources_ptr = pp_sources.data();
+    const std::size_t* __restrict pc_offsets_ptr = pc_offsets.data();
+    const std::size_t* __restrict pc_sources_ptr = pc_sources.data();
+
+    std::size_t num_nodes = node_particles_begin_.size();
+    const std::size_t* __restrict element_node_idx_ptr = element_node_idx_.data();
+
+
+#ifdef OPENACC_ENABLED
+    std::size_t pp_offsets_num = pp_offsets.size();
+    std::size_t pp_sources_num = pp_sources.size();
+    std::size_t pc_offsets_num = pc_offsets.size();
+    std::size_t pc_sources_num = pc_sources.size();
+    if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
+        int n  = num_interp_pts_per_node;
+        int n2 = n * n;
+
+        #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                               elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, elements_area_ptr, \
+                                               targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
+                                               clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                               clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                               potential, potential_old, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
+                                               pp_offsets_ptr[0:pp_offsets_num], pp_sources_ptr[0:pp_sources_num], \
+                                               pc_offsets_ptr[0:pc_offsets_num], pc_sources_ptr[0:pc_sources_num])
+        for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
+            std::size_t element_begin = node_begin_ptr[target_node_idx];
+            std::size_t element_end   = node_end_ptr[target_node_idx];
+
+            std::size_t pp_start = pp_offsets_ptr[target_node_idx];
+            std::size_t pp_end   = pp_offsets_ptr[target_node_idx + 1];
+            std::size_t pc_start = pc_offsets_ptr[target_node_idx];
+            std::size_t pc_end   = pc_offsets_ptr[target_node_idx + 1];
+
+            for (std::size_t tile_start = element_begin; tile_start < element_end; tile_start += kTargetElemTile) {
+                int tile_len = static_cast<int>(element_end - tile_start);
+                if (tile_len > kTargetElemTile) tile_len = kTargetElemTile;
+
+                double target_x_cache[kTargetElemTile];
+                double target_y_cache[kTargetElemTile];
+                double target_z_cache[kTargetElemTile];
+                double target_nx_cache[kTargetElemTile];
+                double target_ny_cache[kTargetElemTile];
+                double target_nz_cache[kTargetElemTile];
+                double target_q_cache[kTargetElemTile];
+                double target_q_dx_cache[kTargetElemTile];
+                double target_q_dy_cache[kTargetElemTile];
+                double target_q_dz_cache[kTargetElemTile];
+
+                double pot_pp_1[kTargetElemTile];
+                double pot_pp_2[kTargetElemTile];
+                double pot_comp_[kTargetElemTile];
+                double pot_comp_dx[kTargetElemTile];
+                double pot_comp_dy[kTargetElemTile];
+                double pot_comp_dz[kTargetElemTile];
+
+                #pragma acc loop vector
+                for (int t = 0; t < tile_len; ++t) {
+                    std::size_t j = tile_start + static_cast<std::size_t>(t);
+                    target_x_cache[t] = elements_x_ptr[j];
+                    target_y_cache[t] = elements_y_ptr[j];
+                    target_z_cache[t] = elements_z_ptr[j];
+                    target_nx_cache[t] = elements_nx_ptr[j];
+                    target_ny_cache[t] = elements_ny_ptr[j];
+                    target_nz_cache[t] = elements_nz_ptr[j];
+                    target_q_cache[t] = targets_q_ptr[j];
+                    target_q_dx_cache[t] = targets_q_dx_ptr[j];
+                    target_q_dy_cache[t] = targets_q_dy_ptr[j];
+                    target_q_dz_cache[t] = targets_q_dz_ptr[j];
+                    pot_pp_1[t] = 0.;
+                    pot_pp_2[t] = 0.;
+                    pot_comp_[t] = 0.;
+                    pot_comp_dx[t] = 0.;
+                    pot_comp_dy[t] = 0.;
+                    pot_comp_dz[t] = 0.;
+                }
+
+                for (std::size_t s = pp_start; s < pp_end; ++s) {
+                    std::size_t source_node_idx = pp_sources_ptr[s];
+                    std::size_t source_begin = node_begin_ptr[source_node_idx];
+                    std::size_t source_end   = node_end_ptr[source_node_idx];
+
+                    for (std::size_t k = source_begin; k < source_end; ++k) {
+                        double source_x = elements_x_ptr[k];
+                        double source_y = elements_y_ptr[k];
+                        double source_z = elements_z_ptr[k];
+
+                        double source_nx = elements_nx_ptr[k];
+                        double source_ny = elements_ny_ptr[k];
+                        double source_nz = elements_nz_ptr[k];
+                        double source_area = elements_area_ptr[k];
+
+                        double potential_old_0 = potential_old[k];
+                        double potential_old_1 = potential_old[k + num_elements];
+
+                        #pragma acc loop vector
+                        for (int t = 0; t < tile_len; ++t) {
+                            double dist_x = source_x - target_x_cache[t];
+                            double dist_y = source_y - target_y_cache[t];
+                            double dist_z = source_z - target_z_cache[t];
+                            double r = std::sqrt(dist_x * dist_x + dist_y * dist_y + dist_z * dist_z);
+
+                            if (r > 0) {
+                                double one_over_r = 1. / r;
+                                double G0 = constants::ONE_OVER_4PI * one_over_r;
+                                double kappa_r = kappa * r;
+                                double exp_kappa_r = std::exp(-kappa_r);
+                                double Gk = exp_kappa_r * G0;
+
+                                double source_cos = (source_nx * dist_x + source_ny * dist_y + source_nz * dist_z) * one_over_r;
+                                double target_cos = (target_nx_cache[t] * dist_x + target_ny_cache[t] * dist_y + target_nz_cache[t] * dist_z) * one_over_r;
+
+                                double tp1 = G0 * one_over_r;
+                                double tp2 = (1. + kappa_r) * exp_kappa_r;
+
+                                double dot_tqsq = source_nx * target_nx_cache[t] + source_ny * target_ny_cache[t] + source_nz * target_nz_cache[t];
+                                double G3 = (dot_tqsq - 3. * target_cos * source_cos) * one_over_r * tp1;
+                                double G4 = tp2 * G3 - kappa2 * target_cos * source_cos * Gk;
+
+                                double L1 = source_cos  * tp1 * (1. - tp2 * eps);
+                                double L2 = G0 - Gk;
+                                double L3 = G4 - G3;
+                                double L4 = target_cos * tp1 * (1. - tp2 / eps);
+
+                                pot_pp_1[t] += (L1 * potential_old_0 + L2 * potential_old_1) * source_area;
+                                pot_pp_2[t] += (L3 * potential_old_0 + L4 * potential_old_1) * source_area;
+                            }
+                        }
+                    }
+                }
+
+                for (std::size_t s = pc_start; s < pc_end; ++s) {
+                    std::size_t source_node_idx = pc_sources_ptr[s];
+
+                    std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
+                    std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
+
+                    double source_x_cache[kBatchedMaxInterpPts];
+                    double source_y_cache[kBatchedMaxInterpPts];
+                    double source_z_cache[kBatchedMaxInterpPts];
+
+                    #pragma acc loop vector
+                    for (int i = 0; i < n; ++i) {
+                        source_x_cache[i] = clusters_x_ptr[source_cluster_interp_pts_begin + i];
+                        source_y_cache[i] = clusters_y_ptr[source_cluster_interp_pts_begin + i];
+                        source_z_cache[i] = clusters_z_ptr[source_cluster_interp_pts_begin + i];
+                    }
+
+                    for (int k1 = 0; k1 < n; ++k1) {
+                    for (int k2 = 0; k2 < n; ++k2) {
+                    for (int k3 = 0; k3 < n; ++k3) {
+                        std::size_t kk = source_cluster_charges_begin + k1 * n2 + k2 * n + k3;
+
+                        double source_x = source_x_cache[k1];
+                        double source_y = source_y_cache[k2];
+                        double source_z = source_z_cache[k3];
+
+                        double source_q    = clusters_q_ptr[kk];
+                        double source_q_dx = clusters_q_dx_ptr[kk];
+                        double source_q_dy = clusters_q_dy_ptr[kk];
+                        double source_q_dz = clusters_q_dz_ptr[kk];
+
+                        #pragma acc loop vector
+                        for (int t = 0; t < tile_len; ++t) {
+                            double dx = target_x_cache[t] - source_x;
+                            double dy = target_y_cache[t] - source_y;
+                            double dz = target_z_cache[t] - source_z;
+
+                            double r2    = dx*dx + dy*dy + dz*dz;
+                            double r     = std::sqrt(r2);
+                            double rinv  = 1. / r;
+                            double r3inv = rinv  * rinv * rinv;
+                            double r5inv = r3inv * rinv * rinv;
+
+                            double kappa_r = kappa * r;
+                            double expkr   =  std::exp(-kappa_r);
+                            double d1term  =  r3inv * expkr * (1. + kappa_r);
+                            double d1term1 = -r3inv + d1term * eps;
+                            double d1term2 = -r3inv + d1term / eps;
+                            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                                   + (kappa2 * r2)));
+                            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                            pot_comp_[t]    += (rinv * (1. - expkr) * (source_q)
+                                                      + d1term1 * (source_q_dx * dx
+                                                                 + source_q_dy * dy
+                                                                 + source_q_dz * dz));
+
+                            pot_comp_dx[t]  += (source_q     * (d1term2 * dx)
+                                              - (source_q_dx * (dx * dx * d2term + d3term)
+                                              +  source_q_dy * (dx * dy * d2term)
+                                              +  source_q_dz * (dx * dz * d2term)));
+
+                            pot_comp_dy[t]  += (source_q     *  d1term2 * dy
+                                              - (source_q_dx * (dx * dy * d2term)
+                                              +  source_q_dy * (dy * dy * d2term + d3term)
+                                              +  source_q_dz * (dy * dz * d2term)));
+
+                            pot_comp_dz[t]  += (source_q     *  d1term2 * dz
+                                              - (source_q_dx * (dx * dz * d2term)
+                                              +  source_q_dy * (dy * dz * d2term)
+                                              +  source_q_dz * (dz * dz * d2term + d3term)));
+                        }
+                    }
+                    }
+                    }
+                }
+
+                #pragma acc loop vector
+                for (int t = 0; t < tile_len; ++t) {
+                    std::size_t j = tile_start + static_cast<std::size_t>(t);
+                    potential[j]                += pot_pp_1[t] + target_q_cache[t] * pot_comp_[t];
+                    potential[j + num_elements] += pot_pp_2[t]
+                                                 + target_q_dx_cache[t] * pot_comp_dx[t]
+                                                 + target_q_dy_cache[t] * pot_comp_dy[t]
+                                                 + target_q_dz_cache[t] * pot_comp_dz[t];
+                }
+            }
+        }
+
+        timers_.particle_cluster_interact.stop();
+        return;
+    }
+    #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                           elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, elements_area_ptr, \
+                                           targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
+                                           clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                           clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                           potential, potential_old, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
+                                           element_node_idx_ptr[0:num_elements], \
+                                           pp_offsets_ptr[0:pp_offsets_num], pp_sources_ptr[0:pp_sources_num], \
+                                           pc_offsets_ptr[0:pc_offsets_num], pc_sources_ptr[0:pc_sources_num])
+#elif defined(OPENMP_ENABLED)
+    #pragma omp parallel for
+#endif
+    for (std::size_t j = 0; j < num_elements; ++j) {
+        std::size_t target_node_idx = element_node_idx_ptr[j];
+
+        std::size_t pp_start = pp_offsets_ptr[target_node_idx];
+        std::size_t pp_end   = pp_offsets_ptr[target_node_idx + 1];
+        std::size_t pc_start = pc_offsets_ptr[target_node_idx];
+        std::size_t pc_end   = pc_offsets_ptr[target_node_idx + 1];
+
+        double target_x = elements_x_ptr[j];
+        double target_y = elements_y_ptr[j];
+        double target_z = elements_z_ptr[j];
+        double target_nx = elements_nx_ptr[j];
+        double target_ny = elements_ny_ptr[j];
+        double target_nz = elements_nz_ptr[j];
+
+        double pot_pp_1 = 0.;
+        double pot_pp_2 = 0.;
+
+        for (std::size_t s = pp_start; s < pp_end; ++s) {
+            std::size_t source_node_idx = pp_sources_ptr[s];
+            std::size_t source_begin = node_begin_ptr[source_node_idx];
+            std::size_t source_end   = node_end_ptr[source_node_idx];
+
+#ifdef OPENACC_ENABLED
+            #pragma acc loop vector reduction(+:pot_pp_1, pot_pp_2)
+#endif
+            for (std::size_t k = source_begin; k < source_end; ++k) {
+                double source_x = elements_x_ptr[k];
+                double source_y = elements_y_ptr[k];
+                double source_z = elements_z_ptr[k];
+
+                double source_nx = elements_nx_ptr[k];
+                double source_ny = elements_ny_ptr[k];
+                double source_nz = elements_nz_ptr[k];
+                double source_area = elements_area_ptr[k];
+
+                double potential_old_0 = potential_old[k];
+                double potential_old_1 = potential_old[k + num_elements];
+
+                double dist_x = source_x - target_x;
+                double dist_y = source_y - target_y;
+                double dist_z = source_z - target_z;
+                double r = std::sqrt(dist_x * dist_x + dist_y * dist_y + dist_z * dist_z);
+
+                if (r > 0) {
+                    double one_over_r = 1. / r;
+                    double G0 = constants::ONE_OVER_4PI * one_over_r;
+                    double kappa_r = kappa * r;
+                    double exp_kappa_r = std::exp(-kappa_r);
+                    double Gk = exp_kappa_r * G0;
+
+                    double source_cos = (source_nx * dist_x + source_ny * dist_y + source_nz * dist_z) * one_over_r;
+                    double target_cos = (target_nx * dist_x + target_ny * dist_y + target_nz * dist_z) * one_over_r;
+
+                    double tp1 = G0 * one_over_r;
+                    double tp2 = (1. + kappa_r) * exp_kappa_r;
+
+                    double dot_tqsq = source_nx * target_nx + source_ny * target_ny + source_nz * target_nz;
+                    double G3 = (dot_tqsq - 3. * target_cos * source_cos) * one_over_r * tp1;
+                    double G4 = tp2 * G3 - kappa2 * target_cos * source_cos * Gk;
+
+                    double L1 = source_cos  * tp1 * (1. - tp2 * eps);
+                    double L2 = G0 - Gk;
+                    double L3 = G4 - G3;
+                    double L4 = target_cos * tp1 * (1. - tp2 / eps);
+
+                    pot_pp_1 += (L1 * potential_old_0 + L2 * potential_old_1) * source_area;
+                    pot_pp_2 += (L3 * potential_old_0 + L4 * potential_old_1) * source_area;
+                }
+            }
+        }
+
+        double pot_comp_   = 0.;
+        double pot_comp_dx = 0.;
+        double pot_comp_dy = 0.;
+        double pot_comp_dz = 0.;
+
+        for (std::size_t s = pc_start; s < pc_end; ++s) {
+            std::size_t source_node_idx = pc_sources_ptr[s];
+
+            std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
+            std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
+
+#ifdef OPENACC_ENABLED
+            if (num_interp_pts_per_node <= kMaxInterpPts) {
+                double dx_cache[kMaxInterpPts];
+                double dy_cache[kMaxInterpPts];
+                double dz_cache[kMaxInterpPts];
+                double dx2_cache[kMaxInterpPts];
+                double dy2_cache[kMaxInterpPts];
+                double dz2_cache[kMaxInterpPts];
+
+                #pragma acc loop seq
+                for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
+                    double dx = target_x - clusters_x_ptr[source_cluster_interp_pts_begin + k1];
+                    dx_cache[k1] = dx;
+                    dx2_cache[k1] = dx * dx;
+                }
+                #pragma acc loop seq
+                for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
+                    double dy = target_y - clusters_y_ptr[source_cluster_interp_pts_begin + k2];
+                    dy_cache[k2] = dy;
+                    dy2_cache[k2] = dy * dy;
+                }
+                #pragma acc loop seq
+                for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
+                    double dz = target_z - clusters_z_ptr[source_cluster_interp_pts_begin + k3];
+                    dz_cache[k3] = dz;
+                    dz2_cache[k3] = dz * dz;
+                }
+
+                #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
+                for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
+                for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
+                for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
+                    std::size_t kk = source_cluster_charges_begin
+                                   + k1 * num_interp_pts_per_node * num_interp_pts_per_node
+                                   + k2 * num_interp_pts_per_node + k3;
+
+                    double dx = dx_cache[k1];
+                    double dy = dy_cache[k2];
+                    double dz = dz_cache[k3];
+                    double r2 = dx2_cache[k1] + dy2_cache[k2] + dz2_cache[k3];
+                    double r  = std::sqrt(r2);
+                    double rinv  = 1. / r;
+                    double r3inv = rinv  * rinv * rinv;
+                    double r5inv = r3inv * rinv * rinv;
+
+                    double kappa_r = kappa * r;
+                    double expkr   =  std::exp(-kappa_r);
+                    double d1term  =  r3inv * expkr * (1. + kappa_r);
+                    double d1term1 = -r3inv + d1term * eps;
+                    double d1term2 = -r3inv + d1term / eps;
+                    double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                           + (kappa2 * r2)));
+                    double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                    pot_comp_    += (rinv * (1. - expkr) * (clusters_q_ptr   [kk])
+                                              + d1term1 * (clusters_q_dx_ptr[kk] * dx
+                                                         + clusters_q_dy_ptr[kk] * dy
+                                                         + clusters_q_dz_ptr[kk] * dz));
+
+                    pot_comp_dx  += (clusters_q_ptr   [kk]  * (d1term2 * dx)
+                                  - (clusters_q_dx_ptr[kk]  * (dx * dx * d2term + d3term)
+                                  +  clusters_q_dy_ptr[kk]  * (dx * dy * d2term)
+                                  +  clusters_q_dz_ptr[kk]  * (dx * dz * d2term)));
+
+                    pot_comp_dy  += (clusters_q_ptr   [kk]  *  d1term2 * dy
+                                  - (clusters_q_dx_ptr[kk]  * (dx * dy * d2term)
+                                  +  clusters_q_dy_ptr[kk]  * (dy * dy * d2term + d3term)
+                                  +  clusters_q_dz_ptr[kk]  * (dy * dz * d2term)));
+
+                    pot_comp_dz  += (clusters_q_ptr   [kk]  *  d1term2 * dz
+                                  - (clusters_q_dx_ptr[kk]  * (dx * dz * d2term)
+                                  +  clusters_q_dy_ptr[kk]  * (dy * dz * d2term)
+                                  +  clusters_q_dz_ptr[kk]  * (dz * dz * d2term + d3term)));
+                }
+                }
+                }
+                continue;
+            }
+#endif
+
+#ifdef OPENACC_ENABLED
+            #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
+#endif
+            for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
+            for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
+            for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
+                std::size_t kk = source_cluster_charges_begin
+                               + k1 * num_interp_pts_per_node * num_interp_pts_per_node
+                               + k2 * num_interp_pts_per_node + k3;
+
+                double dx = target_x - clusters_x_ptr[source_cluster_interp_pts_begin + k1];
+                double dy = target_y - clusters_y_ptr[source_cluster_interp_pts_begin + k2];
+                double dz = target_z - clusters_z_ptr[source_cluster_interp_pts_begin + k3];
+
+                double r2    = dx*dx + dy*dy + dz*dz;
+                double r     = std::sqrt(r2);
+                double rinv  = 1. / r;
+                double r3inv = rinv  * rinv * rinv;
+                double r5inv = r3inv * rinv * rinv;
+
+                double kappa_r = kappa * r;
+                double expkr   =  std::exp(-kappa_r);
+                double d1term  =  r3inv * expkr * (1. + kappa_r);
+                double d1term1 = -r3inv + d1term * eps;
+                double d1term2 = -r3inv + d1term / eps;
+                double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                       + (kappa2 * r2)));
+                double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                pot_comp_    += (rinv * (1. - expkr) * (clusters_q_ptr   [kk])
+                                          + d1term1 * (clusters_q_dx_ptr[kk] * dx
+                                                     + clusters_q_dy_ptr[kk] * dy
+                                                     + clusters_q_dz_ptr[kk] * dz));
+
+                pot_comp_dx  += (clusters_q_ptr   [kk]  * (d1term2 * dx)
+                              - (clusters_q_dx_ptr[kk]  * (dx * dx * d2term + d3term)
+                              +  clusters_q_dy_ptr[kk]  * (dx * dy * d2term)
+                              +  clusters_q_dz_ptr[kk]  * (dx * dz * d2term)));
+
+                pot_comp_dy  += (clusters_q_ptr   [kk]  *  d1term2 * dy
+                              - (clusters_q_dx_ptr[kk]  * (dx * dy * d2term)
+                              +  clusters_q_dy_ptr[kk]  * (dy * dy * d2term + d3term)
+                              +  clusters_q_dz_ptr[kk]  * (dy * dz * d2term)));
+
+                pot_comp_dz  += (clusters_q_ptr   [kk]  *  d1term2 * dz
+                              - (clusters_q_dx_ptr[kk]  * (dx * dz * d2term)
+                              +  clusters_q_dy_ptr[kk]  * (dy * dz * d2term)
+                              +  clusters_q_dz_ptr[kk]  * (dz * dz * d2term + d3term)));
+            }
+            }
+            }
+        }
+
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+        #pragma omp atomic update
+#endif
+        potential[j]                += pot_pp_1 + targets_q_ptr   [j] * pot_comp_;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+        #pragma omp atomic update
+#endif
+        potential[j + num_elements] += pot_pp_2
+                                     + targets_q_dx_ptr[j] * pot_comp_dx
+                                     + targets_q_dy_ptr[j] * pot_comp_dy
+                                     + targets_q_dz_ptr[j] * pot_comp_dz;
+    }
+
+    timers_.particle_cluster_interact.stop();
+}
+
+
+void BoundaryElement::cluster_particle_interact_all(double* __restrict potential)
+{
+    timers_.cluster_particle_interact.start();
+    (void)potential;
+
+    int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
+    int num_potentials_per_node = num_charges_per_node_;
+
+    double eps    = params_.phys_eps_;
+    double kappa  = params_.phys_kappa_;
+    double kappa2 = params_.phys_kappa2_;
+
+    const double* __restrict clusters_x_ptr    = interp_pts_.interp_x_ptr();
+    const double* __restrict clusters_y_ptr    = interp_pts_.interp_y_ptr();
+    const double* __restrict clusters_z_ptr    = interp_pts_.interp_z_ptr();
+
+    double* __restrict clusters_p_ptr          = interp_potential_.data();
+    double* __restrict clusters_p_dx_ptr       = interp_potential_dx_.data();
+    double* __restrict clusters_p_dy_ptr       = interp_potential_dy_.data();
+    double* __restrict clusters_p_dz_ptr       = interp_potential_dz_.data();
+
+    const double* __restrict elements_x_ptr    = elements_.x_ptr();
+    const double* __restrict elements_y_ptr    = elements_.y_ptr();
+    const double* __restrict elements_z_ptr    = elements_.z_ptr();
+
+    const double* __restrict sources_q_ptr     = elements_.source_charge_ptr();
+    const double* __restrict sources_q_dx_ptr  = elements_.source_charge_dx_ptr();
+    const double* __restrict sources_q_dy_ptr  = elements_.source_charge_dy_ptr();
+    const double* __restrict sources_q_dz_ptr  = elements_.source_charge_dz_ptr();
+
+    const std::size_t* __restrict node_begin_ptr = node_particles_begin_.data();
+    const std::size_t* __restrict node_end_ptr   = node_particles_end_.data();
+
+    const auto& cp_offsets = interaction_list_.cluster_particle_offsets();
+    const auto& cp_sources = interaction_list_.cluster_particle_flat();
+    const std::size_t* __restrict offsets_ptr = cp_offsets.data();
+    const std::size_t* __restrict sources_ptr = cp_sources.data();
+
+    std::size_t num_nodes = node_particles_begin_.size();
+
+#ifdef OPENACC_ENABLED
+    std::size_t offsets_num = cp_offsets.size();
+    std::size_t sources_num = cp_sources.size();
+    #pragma acc parallel loop gang present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                           clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
+                                           elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                           sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
+                                           potential, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
+                                           offsets_ptr[0:offsets_num], sources_ptr[0:sources_num])
+#elif defined(OPENMP_ENABLED)
+    #pragma omp parallel for
+#endif
+    for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
+        std::size_t target_cluster_interp_pts_begin = target_node_idx * num_interp_pts_per_node;
+        std::size_t target_cluster_potentials_begin = target_node_idx * num_potentials_per_node;
+
+        std::size_t src_start = offsets_ptr[target_node_idx];
+        std::size_t src_end   = offsets_ptr[target_node_idx + 1];
+
+#ifdef OPENACC_ENABLED
+        #pragma acc loop collapse(3) vector
+#endif
+        for (int j1 = 0; j1 < num_interp_pts_per_node; ++j1) {
+        for (int j2 = 0; j2 < num_interp_pts_per_node; ++j2) {
+        for (int j3 = 0; j3 < num_interp_pts_per_node; ++j3) {
+            std::size_t jj = target_cluster_potentials_begin
+                           + j1 * num_interp_pts_per_node * num_interp_pts_per_node
+                           + j2 * num_interp_pts_per_node + j3;
+
+            double target_x = clusters_x_ptr[target_cluster_interp_pts_begin + j1];
+            double target_y = clusters_y_ptr[target_cluster_interp_pts_begin + j2];
+            double target_z = clusters_z_ptr[target_cluster_interp_pts_begin + j3];
+
+            double pot_comp_   = 0.;
+            double pot_comp_dx = 0.;
+            double pot_comp_dy = 0.;
+            double pot_comp_dz = 0.;
+
+            for (std::size_t s = src_start; s < src_end; ++s) {
+                std::size_t source_node_idx = sources_ptr[s];
+                std::size_t source_begin = node_begin_ptr[source_node_idx];
+                std::size_t source_end   = node_end_ptr[source_node_idx];
+
+#ifdef OPENACC_ENABLED
+                #pragma acc loop vector reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
+#endif
+                for (std::size_t k = source_begin; k < source_end; ++k) {
+                    double dx = target_x - elements_x_ptr[k];
+                    double dy = target_y - elements_y_ptr[k];
+                    double dz = target_z - elements_z_ptr[k];
+
+                    double r2    = dx*dx + dy*dy + dz*dz;
+                    double r     = std::sqrt(r2);
+                    double rinv  = 1. / r;
+                    double r3inv = rinv  * rinv * rinv;
+                    double r5inv = r3inv * rinv * rinv;
+
+                    double kappa_r = kappa * r;
+                    double expkr   =  std::exp(-kappa_r);
+                    double d1term  =  r3inv * expkr * (1. + kappa_r);
+                    double d1term1 = -r3inv + d1term * eps;
+                    double d1term2 = -r3inv + d1term / eps;
+                    double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                           + (kappa2 * r2)));
+                    double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                    pot_comp_    += (rinv * (1. - expkr) * (sources_q_ptr   [k])
+                                              + d1term1 * (sources_q_dx_ptr[k] * dx
+                                                         + sources_q_dy_ptr[k] * dy
+                                                         + sources_q_dz_ptr[k] * dz));
+
+                    pot_comp_dx  += (sources_q_ptr   [k]  * (d1term2 * dx)
+                                  - (sources_q_dx_ptr[k]  * (dx * dx * d2term + d3term)
+                                  +  sources_q_dy_ptr[k]  * (dx * dy * d2term)
+                                  +  sources_q_dz_ptr[k]  * (dx * dz * d2term)));
+
+                    pot_comp_dy  += (sources_q_ptr   [k]  *  d1term2 * dy
+                                  - (sources_q_dx_ptr[k]  * (dx * dy * d2term)
+                                  +  sources_q_dy_ptr[k]  * (dy * dy * d2term + d3term)
+                                  +  sources_q_dz_ptr[k]  * (dy * dz * d2term)));
+
+                    pot_comp_dz  += (sources_q_ptr   [k]  *  d1term2 * dz
+                                  - (sources_q_dx_ptr[k]  * (dx * dz * d2term)
+                                  +  sources_q_dy_ptr[k]  * (dy * dz * d2term)
+                                  +  sources_q_dz_ptr[k]  * (dz * dz * d2term + d3term)));
+                }
+            }
+
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_ptr   [jj] += pot_comp_;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_dx_ptr[jj] += pot_comp_dx;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_dy_ptr[jj] += pot_comp_dy;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_dz_ptr[jj] += pot_comp_dz;
+        }
+        }
+        }
+    }
+
+    timers_.cluster_particle_interact.stop();
+}
+
+
+void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
+{
+    timers_.cluster_cluster_interact.start();
+    (void)potential;
+
+    constexpr int kMaxInterpPts = 16;
+    constexpr int kBatchedMaxInterpPts = 8;
+    constexpr int kTargetTile = 4;
+    constexpr int kTargetTileCharges = kTargetTile * kTargetTile * kTargetTile;
+
+    int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
+    int num_charges_per_node    = num_charges_per_node_;
+
+    double eps    = params_.phys_eps_;
+    double kappa  = params_.phys_kappa_;
+    double kappa2 = params_.phys_kappa2_;
+
+    const double* __restrict clusters_x_ptr    = interp_pts_.interp_x_ptr();
+    const double* __restrict clusters_y_ptr    = interp_pts_.interp_y_ptr();
+    const double* __restrict clusters_z_ptr    = interp_pts_.interp_z_ptr();
+
+    double* __restrict clusters_p_ptr          = interp_potential_.data();
+    double* __restrict clusters_p_dx_ptr       = interp_potential_dx_.data();
+    double* __restrict clusters_p_dy_ptr       = interp_potential_dy_.data();
+    double* __restrict clusters_p_dz_ptr       = interp_potential_dz_.data();
+
+    const double* __restrict clusters_q_ptr    = interp_charge_.data();
+    const double* __restrict clusters_q_dx_ptr = interp_charge_dx_.data();
+    const double* __restrict clusters_q_dy_ptr = interp_charge_dy_.data();
+    const double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
+
+    const double* __restrict elements_x_ptr    = elements_.x_ptr();
+    const double* __restrict elements_y_ptr    = elements_.y_ptr();
+    const double* __restrict elements_z_ptr    = elements_.z_ptr();
+
+    const double* __restrict sources_q_ptr     = elements_.source_charge_ptr();
+    const double* __restrict sources_q_dx_ptr  = elements_.source_charge_dx_ptr();
+    const double* __restrict sources_q_dy_ptr  = elements_.source_charge_dy_ptr();
+    const double* __restrict sources_q_dz_ptr  = elements_.source_charge_dz_ptr();
+
+    const std::size_t* __restrict node_begin_ptr = node_particles_begin_.data();
+    const std::size_t* __restrict node_end_ptr   = node_particles_end_.data();
+
+    const auto& cp_offsets = interaction_list_.cluster_particle_offsets();
+    const auto& cp_sources = interaction_list_.cluster_particle_flat();
+    const std::size_t* __restrict cp_offsets_ptr = cp_offsets.data();
+    const std::size_t* __restrict cp_sources_ptr = cp_sources.data();
+
+    const auto& cc_offsets = interaction_list_.cluster_cluster_offsets();
+    const auto& cc_sources = interaction_list_.cluster_cluster_flat();
+    const std::size_t* __restrict cc_offsets_ptr = cc_offsets.data();
+    const std::size_t* __restrict cc_sources_ptr = cc_sources.data();
+
+    std::size_t num_nodes = node_particles_begin_.size();
+
+#ifdef OPENACC_ENABLED
+    std::size_t cp_offsets_num = cp_offsets.size();
+    std::size_t cp_sources_num = cp_sources.size();
+    std::size_t cc_offsets_num = cc_offsets.size();
+    std::size_t cc_sources_num = cc_sources.size();
+    if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
+        int n  = num_interp_pts_per_node;
+        int n2 = n * n;
+
+        #pragma acc parallel loop gang present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                               clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
+                                               clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                               elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                               sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
+                                               potential, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
+                                               cp_offsets_ptr[0:cp_offsets_num], cp_sources_ptr[0:cp_sources_num], \
+                                               cc_offsets_ptr[0:cc_offsets_num], cc_sources_ptr[0:cc_sources_num])
+        for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
+            std::size_t target_cluster_interp_pts_begin = target_node_idx * num_interp_pts_per_node;
+            std::size_t target_cluster_potentials_begin = target_node_idx * num_charges_per_node;
+
+            std::size_t cp_start = cp_offsets_ptr[target_node_idx];
+            std::size_t cp_end   = cp_offsets_ptr[target_node_idx + 1];
+            std::size_t cc_start = cc_offsets_ptr[target_node_idx];
+            std::size_t cc_end   = cc_offsets_ptr[target_node_idx + 1];
+
+            double target_x_cache[kBatchedMaxInterpPts];
+            double target_y_cache[kBatchedMaxInterpPts];
+            double target_z_cache[kBatchedMaxInterpPts];
+
+            #pragma acc loop vector
+            for (int i = 0; i < n; ++i) {
+                target_x_cache[i] = clusters_x_ptr[target_cluster_interp_pts_begin + i];
+                target_y_cache[i] = clusters_y_ptr[target_cluster_interp_pts_begin + i];
+                target_z_cache[i] = clusters_z_ptr[target_cluster_interp_pts_begin + i];
+            }
+
+            if (n <= 3) {
+                constexpr int kSmallTile = 3;
+                constexpr int kSmallTileCharges = kSmallTile * kSmallTile * kSmallTile;
+
+                double pot_comp_[kSmallTileCharges];
+                double pot_comp_dx[kSmallTileCharges];
+                double pot_comp_dy[kSmallTileCharges];
+                double pot_comp_dz[kSmallTileCharges];
+
+                #pragma acc loop vector collapse(3)
+                for (int j1 = 0; j1 < n; ++j1) {
+                for (int j2 = 0; j2 < n; ++j2) {
+                for (int j3 = 0; j3 < n; ++j3) {
+                    int jj = j1 * n2 + j2 * n + j3;
+                    pot_comp_[jj] = 0.;
+                    pot_comp_dx[jj] = 0.;
+                    pot_comp_dy[jj] = 0.;
+                    pot_comp_dz[jj] = 0.;
+                }
+                }
+                }
+
+                for (std::size_t s = cp_start; s < cp_end; ++s) {
+                    std::size_t source_node_idx = cp_sources_ptr[s];
+                    std::size_t source_begin = node_begin_ptr[source_node_idx];
+                    std::size_t source_end   = node_end_ptr[source_node_idx];
+
+                    for (std::size_t k = source_begin; k < source_end; ++k) {
+                        double source_x = elements_x_ptr[k];
+                        double source_y = elements_y_ptr[k];
+                        double source_z = elements_z_ptr[k];
+
+                        double source_q    = sources_q_ptr[k];
+                        double source_q_dx = sources_q_dx_ptr[k];
+                        double source_q_dy = sources_q_dy_ptr[k];
+                        double source_q_dz = sources_q_dz_ptr[k];
+
+                        double dx_cache[kSmallTile];
+                        double dy_cache[kSmallTile];
+                        double dz_cache[kSmallTile];
+                        double dx2_cache[kSmallTile];
+                        double dy2_cache[kSmallTile];
+                        double dz2_cache[kSmallTile];
+
+                        #pragma acc loop vector
+                        for (int j1 = 0; j1 < n; ++j1) {
+                            double dx = target_x_cache[j1] - source_x;
+                            dx_cache[j1] = dx;
+                            dx2_cache[j1] = dx * dx;
+                        }
+                        #pragma acc loop vector
+                        for (int j2 = 0; j2 < n; ++j2) {
+                            double dy = target_y_cache[j2] - source_y;
+                            dy_cache[j2] = dy;
+                            dy2_cache[j2] = dy * dy;
+                        }
+                        #pragma acc loop vector
+                        for (int j3 = 0; j3 < n; ++j3) {
+                            double dz = target_z_cache[j3] - source_z;
+                            dz_cache[j3] = dz;
+                            dz2_cache[j3] = dz * dz;
+                        }
+
+                        #pragma acc loop vector collapse(3)
+                        for (int j1 = 0; j1 < n; ++j1) {
+                        for (int j2 = 0; j2 < n; ++j2) {
+                        for (int j3 = 0; j3 < n; ++j3) {
+                            int jj = j1 * n2 + j2 * n + j3;
+
+                            double dx = dx_cache[j1];
+                            double dy = dy_cache[j2];
+                            double dz = dz_cache[j3];
+
+                            double r2    = dx2_cache[j1] + dy2_cache[j2] + dz2_cache[j3];
+                            double r     = std::sqrt(r2);
+                            double rinv  = 1. / r;
+                            double r3inv = rinv  * rinv * rinv;
+                            double r5inv = r3inv * rinv * rinv;
+
+                            double kappa_r = kappa * r;
+                            double expkr   =  std::exp(-kappa_r);
+                            double d1term  =  r3inv * expkr * (1. + kappa_r);
+                            double d1term1 = -r3inv + d1term * eps;
+                            double d1term2 = -r3inv + d1term / eps;
+                            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                                   + (kappa2 * r2)));
+                            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                            pot_comp_[jj]    += (rinv * (1. - expkr) * (source_q)
+                                                       + d1term1 * (source_q_dx * dx
+                                                                  + source_q_dy * dy
+                                                                  + source_q_dz * dz));
+
+                            pot_comp_dx[jj]  += (source_q     * (d1term2 * dx)
+                                              - (source_q_dx * (dx * dx * d2term + d3term)
+                                              +  source_q_dy * (dx * dy * d2term)
+                                              +  source_q_dz * (dx * dz * d2term)));
+
+                            pot_comp_dy[jj]  += (source_q     *  d1term2 * dy
+                                              - (source_q_dx * (dx * dy * d2term)
+                                              +  source_q_dy * (dy * dy * d2term + d3term)
+                                              +  source_q_dz * (dy * dz * d2term)));
+
+                            pot_comp_dz[jj]  += (source_q     *  d1term2 * dz
+                                              - (source_q_dx * (dx * dz * d2term)
+                                              +  source_q_dy * (dy * dz * d2term)
+                                              +  source_q_dz * (dz * dz * d2term + d3term)));
+                        }
+                        }
+                        }
+                    }
+                }
+
+                for (std::size_t s = cc_start; s < cc_end; ++s) {
+                    std::size_t source_node_idx = cc_sources_ptr[s];
+
+                    std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
+                    std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
+
+                    double source_x_cache[kSmallTile];
+                    double source_y_cache[kSmallTile];
+                    double source_z_cache[kSmallTile];
+
+                    #pragma acc loop vector
+                    for (int i = 0; i < n; ++i) {
+                        source_x_cache[i] = clusters_x_ptr[source_cluster_interp_pts_begin + i];
+                        source_y_cache[i] = clusters_y_ptr[source_cluster_interp_pts_begin + i];
+                        source_z_cache[i] = clusters_z_ptr[source_cluster_interp_pts_begin + i];
+                    }
+
+                    for (int k1 = 0; k1 < n; ++k1) {
+                    for (int k2 = 0; k2 < n; ++k2) {
+                    for (int k3 = 0; k3 < n; ++k3) {
+                        std::size_t kk = source_cluster_charges_begin + k1 * n2 + k2 * n + k3;
+
+                        double source_x = source_x_cache[k1];
+                        double source_y = source_y_cache[k2];
+                        double source_z = source_z_cache[k3];
+
+                        double source_q    = clusters_q_ptr[kk];
+                        double source_q_dx = clusters_q_dx_ptr[kk];
+                        double source_q_dy = clusters_q_dy_ptr[kk];
+                        double source_q_dz = clusters_q_dz_ptr[kk];
+
+                        double dx_cache[kSmallTile];
+                        double dy_cache[kSmallTile];
+                        double dz_cache[kSmallTile];
+                        double dx2_cache[kSmallTile];
+                        double dy2_cache[kSmallTile];
+                        double dz2_cache[kSmallTile];
+
+                        #pragma acc loop vector
+                        for (int j1 = 0; j1 < n; ++j1) {
+                            double dx = target_x_cache[j1] - source_x;
+                            dx_cache[j1] = dx;
+                            dx2_cache[j1] = dx * dx;
+                        }
+                        #pragma acc loop vector
+                        for (int j2 = 0; j2 < n; ++j2) {
+                            double dy = target_y_cache[j2] - source_y;
+                            dy_cache[j2] = dy;
+                            dy2_cache[j2] = dy * dy;
+                        }
+                        #pragma acc loop vector
+                        for (int j3 = 0; j3 < n; ++j3) {
+                            double dz = target_z_cache[j3] - source_z;
+                            dz_cache[j3] = dz;
+                            dz2_cache[j3] = dz * dz;
+                        }
+
+                        #pragma acc loop vector collapse(3)
+                        for (int j1 = 0; j1 < n; ++j1) {
+                        for (int j2 = 0; j2 < n; ++j2) {
+                        for (int j3 = 0; j3 < n; ++j3) {
+                            int jj = j1 * n2 + j2 * n + j3;
+
+                            double dx = dx_cache[j1];
+                            double dy = dy_cache[j2];
+                            double dz = dz_cache[j3];
+
+                            double r2    = dx2_cache[j1] + dy2_cache[j2] + dz2_cache[j3];
+                            double r     = std::sqrt(r2);
+                            double rinv  = 1.0 / r;
+                            double r3inv = rinv  * rinv * rinv;
+                            double r5inv = r3inv * rinv * rinv;
+
+                            double kappa_r = kappa * r;
+                            double expkr   =  std::exp(-kappa_r);
+                            double d1term  =  r3inv * expkr * (1. + kappa_r);
+                            double d1term1 = -r3inv + d1term * eps;
+                            double d1term2 = -r3inv + d1term / eps;
+                            double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                                   + (kappa2 * r2)));
+                            double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                            pot_comp_[jj]    += (rinv * (1. - expkr) * (source_q)
+                                                       + d1term1 * (source_q_dx * dx
+                                                                  + source_q_dy * dy
+                                                                  + source_q_dz * dz));
+
+                            pot_comp_dx[jj]  += (source_q     * (d1term2 * dx)
+                                              - (source_q_dx * (dx * dx * d2term + d3term)
+                                              +  source_q_dy * (dx * dy * d2term)
+                                              +  source_q_dz * (dx * dz * d2term)));
+
+                            pot_comp_dy[jj]  += (source_q     *  d1term2 * dy
+                                              - (source_q_dx * (dx * dy * d2term)
+                                              +  source_q_dy * (dy * dy * d2term + d3term)
+                                              +  source_q_dz * (dy * dz * d2term)));
+
+                            pot_comp_dz[jj]  += (source_q     *  d1term2 * dz
+                                              - (source_q_dx * (dx * dz * d2term)
+                                              +  source_q_dy * (dy * dz * d2term)
+                                              +  source_q_dz * (dz * dz * d2term + d3term)));
+                        }
+                        }
+                        }
+                    }
+                    }
+                    }
+                }
+
+                #pragma acc loop vector collapse(3)
+                for (int j1 = 0; j1 < n; ++j1) {
+                for (int j2 = 0; j2 < n; ++j2) {
+                for (int j3 = 0; j3 < n; ++j3) {
+                    int jj = j1 * n2 + j2 * n + j3;
+                    std::size_t out_idx = target_cluster_potentials_begin + j1 * n2 + j2 * n + j3;
+                    clusters_p_ptr   [out_idx] += pot_comp_   [jj];
+                    clusters_p_dx_ptr[out_idx] += pot_comp_dx[jj];
+                    clusters_p_dy_ptr[out_idx] += pot_comp_dy[jj];
+                    clusters_p_dz_ptr[out_idx] += pot_comp_dz[jj];
+                }
+                }
+                }
+                continue;
+            }
+
+            for (int t1 = 0; t1 < n; t1 += kTargetTile) {
+                int t1_max = (t1 + kTargetTile < n) ? (t1 + kTargetTile) : n;
+                int tn1 = t1_max - t1;
+                for (int t2 = 0; t2 < n; t2 += kTargetTile) {
+                    int t2_max = (t2 + kTargetTile < n) ? (t2 + kTargetTile) : n;
+                    int tn2 = t2_max - t2;
+                    for (int t3 = 0; t3 < n; t3 += kTargetTile) {
+                        int t3_max = (t3 + kTargetTile < n) ? (t3 + kTargetTile) : n;
+                        int tn3 = t3_max - t3;
+                        int tile_n2 = tn2 * tn3;
+
+                        double pot_comp_[kTargetTileCharges];
+                        double pot_comp_dx[kTargetTileCharges];
+                        double pot_comp_dy[kTargetTileCharges];
+                        double pot_comp_dz[kTargetTileCharges];
+
+                        #pragma acc loop vector collapse(3)
+                        for (int j1 = t1; j1 < t1_max; ++j1) {
+                        for (int j2 = t2; j2 < t2_max; ++j2) {
+                        for (int j3 = t3; j3 < t3_max; ++j3) {
+                            int jj = (j1 - t1) * tile_n2 + (j2 - t2) * tn3 + (j3 - t3);
+                            pot_comp_[jj] = 0.;
+                            pot_comp_dx[jj] = 0.;
+                            pot_comp_dy[jj] = 0.;
+                            pot_comp_dz[jj] = 0.;
+                        }
+                        }
+                        }
+
+                        for (std::size_t s = cp_start; s < cp_end; ++s) {
+                            std::size_t source_node_idx = cp_sources_ptr[s];
+                            std::size_t source_begin = node_begin_ptr[source_node_idx];
+                            std::size_t source_end   = node_end_ptr[source_node_idx];
+
+                            for (std::size_t k = source_begin; k < source_end; ++k) {
+                                double source_x = elements_x_ptr[k];
+                                double source_y = elements_y_ptr[k];
+                                double source_z = elements_z_ptr[k];
+
+                                double source_q    = sources_q_ptr[k];
+                                double source_q_dx = sources_q_dx_ptr[k];
+                                double source_q_dy = sources_q_dy_ptr[k];
+                                double source_q_dz = sources_q_dz_ptr[k];
+
+                                #pragma acc loop vector collapse(3)
+                                for (int j1 = t1; j1 < t1_max; ++j1) {
+                                for (int j2 = t2; j2 < t2_max; ++j2) {
+                                for (int j3 = t3; j3 < t3_max; ++j3) {
+                                    int jj = (j1 - t1) * tile_n2 + (j2 - t2) * tn3 + (j3 - t3);
+
+                                    double dx = target_x_cache[j1] - source_x;
+                                    double dy = target_y_cache[j2] - source_y;
+                                    double dz = target_z_cache[j3] - source_z;
+
+                                    double r2    = dx*dx + dy*dy + dz*dz;
+                                    double r     = std::sqrt(r2);
+                                    double rinv  = 1. / r;
+                                    double r3inv = rinv  * rinv * rinv;
+                                    double r5inv = r3inv * rinv * rinv;
+
+                                    double kappa_r = kappa * r;
+                                    double expkr   =  std::exp(-kappa_r);
+                                    double d1term  =  r3inv * expkr * (1. + kappa_r);
+                                    double d1term1 = -r3inv + d1term * eps;
+                                    double d1term2 = -r3inv + d1term / eps;
+                                    double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                                           + (kappa2 * r2)));
+                                    double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                                    pot_comp_[jj]    += (rinv * (1. - expkr) * (source_q)
+                                                               + d1term1 * (source_q_dx * dx
+                                                                          + source_q_dy * dy
+                                                                          + source_q_dz * dz));
+
+                                    pot_comp_dx[jj]  += (source_q     * (d1term2 * dx)
+                                                      - (source_q_dx * (dx * dx * d2term + d3term)
+                                                      +  source_q_dy * (dx * dy * d2term)
+                                                      +  source_q_dz * (dx * dz * d2term)));
+
+                                    pot_comp_dy[jj]  += (source_q     *  d1term2 * dy
+                                                      - (source_q_dx * (dx * dy * d2term)
+                                                      +  source_q_dy * (dy * dy * d2term + d3term)
+                                                      +  source_q_dz * (dy * dz * d2term)));
+
+                                    pot_comp_dz[jj]  += (source_q     *  d1term2 * dz
+                                                      - (source_q_dx * (dx * dz * d2term)
+                                                      +  source_q_dy * (dy * dz * d2term)
+                                                      +  source_q_dz * (dz * dz * d2term + d3term)));
+                                }
+                                }
+                                }
+                            }
+                        }
+
+                        for (std::size_t s = cc_start; s < cc_end; ++s) {
+                            std::size_t source_node_idx = cc_sources_ptr[s];
+
+                            std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
+                            std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
+
+                            double source_x_cache[kBatchedMaxInterpPts];
+                            double source_y_cache[kBatchedMaxInterpPts];
+                            double source_z_cache[kBatchedMaxInterpPts];
+
+                            #pragma acc loop vector
+                            for (int i = 0; i < n; ++i) {
+                                source_x_cache[i] = clusters_x_ptr[source_cluster_interp_pts_begin + i];
+                                source_y_cache[i] = clusters_y_ptr[source_cluster_interp_pts_begin + i];
+                                source_z_cache[i] = clusters_z_ptr[source_cluster_interp_pts_begin + i];
+                            }
+
+                            for (int k1 = 0; k1 < n; ++k1) {
+                            for (int k2 = 0; k2 < n; ++k2) {
+                            for (int k3 = 0; k3 < n; ++k3) {
+                                std::size_t kk = source_cluster_charges_begin + k1 * n2 + k2 * n + k3;
+
+                                double source_x = source_x_cache[k1];
+                                double source_y = source_y_cache[k2];
+                                double source_z = source_z_cache[k3];
+
+                                double source_q    = clusters_q_ptr[kk];
+                                double source_q_dx = clusters_q_dx_ptr[kk];
+                                double source_q_dy = clusters_q_dy_ptr[kk];
+                                double source_q_dz = clusters_q_dz_ptr[kk];
+
+                                #pragma acc loop vector collapse(3)
+                                for (int j1 = t1; j1 < t1_max; ++j1) {
+                                for (int j2 = t2; j2 < t2_max; ++j2) {
+                                for (int j3 = t3; j3 < t3_max; ++j3) {
+                                    int jj = (j1 - t1) * tile_n2 + (j2 - t2) * tn3 + (j3 - t3);
+
+                                    double dx = target_x_cache[j1] - source_x;
+                                    double dy = target_y_cache[j2] - source_y;
+                                    double dz = target_z_cache[j3] - source_z;
+
+                                    double r2    = dx*dx + dy*dy + dz*dz;
+                                    double r     = std::sqrt(r2);
+                                    double rinv  = 1.0 / r;
+                                    double r3inv = rinv  * rinv * rinv;
+                                    double r5inv = r3inv * rinv * rinv;
+
+                                    double kappa_r = kappa * r;
+                                    double expkr   =  std::exp(-kappa_r);
+                                    double d1term  =  r3inv * expkr * (1. + kappa_r);
+                                    double d1term1 = -r3inv + d1term * eps;
+                                    double d1term2 = -r3inv + d1term / eps;
+                                    double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                                           + (kappa2 * r2)));
+                                    double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                                    pot_comp_[jj]    += (rinv * (1. - expkr) * (source_q)
+                                                               + d1term1 * (source_q_dx * dx
+                                                                          + source_q_dy * dy
+                                                                          + source_q_dz * dz));
+
+                                    pot_comp_dx[jj]  += (source_q     * (d1term2 * dx)
+                                                      - (source_q_dx * (dx * dx * d2term + d3term)
+                                                      +  source_q_dy * (dx * dy * d2term)
+                                                      +  source_q_dz * (dx * dz * d2term)));
+
+                                    pot_comp_dy[jj]  += (source_q     *  d1term2 * dy
+                                                      - (source_q_dx * (dx * dy * d2term)
+                                                      +  source_q_dy * (dy * dy * d2term + d3term)
+                                                      +  source_q_dz * (dy * dz * d2term)));
+
+                                    pot_comp_dz[jj]  += (source_q     *  d1term2 * dz
+                                                      - (source_q_dx * (dx * dz * d2term)
+                                                      +  source_q_dy * (dy * dz * d2term)
+                                                      +  source_q_dz * (dz * dz * d2term + d3term)));
+                                }
+                                }
+                                }
+                            }
+                            }
+                            }
+                        }
+
+                        #pragma acc loop vector collapse(3)
+                        for (int j1 = t1; j1 < t1_max; ++j1) {
+                        for (int j2 = t2; j2 < t2_max; ++j2) {
+                        for (int j3 = t3; j3 < t3_max; ++j3) {
+                            int jj = (j1 - t1) * tile_n2 + (j2 - t2) * tn3 + (j3 - t3);
+                            std::size_t out_idx = target_cluster_potentials_begin + j1 * n2 + j2 * n + j3;
+                            clusters_p_ptr   [out_idx] += pot_comp_   [jj];
+                            clusters_p_dx_ptr[out_idx] += pot_comp_dx[jj];
+                            clusters_p_dy_ptr[out_idx] += pot_comp_dy[jj];
+                            clusters_p_dz_ptr[out_idx] += pot_comp_dz[jj];
+                        }
+                        }
+                        }
+                    }
+                }
+            }
+        }
+
+        timers_.cluster_cluster_interact.stop();
+        return;
+    }
+
+    #pragma acc parallel loop gang present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                           clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
+                                           clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                           elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                           sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
+                                           potential, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
+                                           cp_offsets_ptr[0:cp_offsets_num], cp_sources_ptr[0:cp_sources_num], \
+                                           cc_offsets_ptr[0:cc_offsets_num], cc_sources_ptr[0:cc_sources_num])
+#elif defined(OPENMP_ENABLED)
+    #pragma omp parallel for
+#endif
+    for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
+        std::size_t target_cluster_interp_pts_begin = target_node_idx * num_interp_pts_per_node;
+        std::size_t target_cluster_potentials_begin = target_node_idx * num_charges_per_node;
+
+        std::size_t cp_start = cp_offsets_ptr[target_node_idx];
+        std::size_t cp_end   = cp_offsets_ptr[target_node_idx + 1];
+        std::size_t cc_start = cc_offsets_ptr[target_node_idx];
+        std::size_t cc_end   = cc_offsets_ptr[target_node_idx + 1];
+
+#ifdef OPENACC_ENABLED
+        #pragma acc loop collapse(3) vector
+#endif
+        for (int j1 = 0; j1 < num_interp_pts_per_node; j1++) {
+        for (int j2 = 0; j2 < num_interp_pts_per_node; j2++) {
+        for (int j3 = 0; j3 < num_interp_pts_per_node; j3++) {
+            std::size_t jj = target_cluster_potentials_begin
+                           + j1 * num_interp_pts_per_node * num_interp_pts_per_node
+                           + j2 * num_interp_pts_per_node + j3;
+
+            double target_x = clusters_x_ptr[target_cluster_interp_pts_begin + j1];
+            double target_y = clusters_y_ptr[target_cluster_interp_pts_begin + j2];
+            double target_z = clusters_z_ptr[target_cluster_interp_pts_begin + j3];
+
+            double pot_comp_   = 0.;
+            double pot_comp_dx = 0.;
+            double pot_comp_dy = 0.;
+            double pot_comp_dz = 0.;
+
+            for (std::size_t s = cp_start; s < cp_end; ++s) {
+                std::size_t source_node_idx = cp_sources_ptr[s];
+                std::size_t source_begin = node_begin_ptr[source_node_idx];
+                std::size_t source_end   = node_end_ptr[source_node_idx];
+
+#ifdef OPENACC_ENABLED
+                #pragma acc loop vector reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
+#endif
+                for (std::size_t k = source_begin; k < source_end; ++k) {
+                    double dx = target_x - elements_x_ptr[k];
+                    double dy = target_y - elements_y_ptr[k];
+                    double dz = target_z - elements_z_ptr[k];
+
+                    double r2    = dx*dx + dy*dy + dz*dz;
+                    double r     = std::sqrt(r2);
+                    double rinv  = 1. / r;
+                    double r3inv = rinv  * rinv * rinv;
+                    double r5inv = r3inv * rinv * rinv;
+
+                    double kappa_r = kappa * r;
+                    double expkr   =  std::exp(-kappa_r);
+                    double d1term  =  r3inv * expkr * (1. + kappa_r);
+                    double d1term1 = -r3inv + d1term * eps;
+                    double d1term2 = -r3inv + d1term / eps;
+                    double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                           + (kappa2 * r2)));
+                    double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                    pot_comp_    += (rinv * (1. - expkr) * (sources_q_ptr   [k])
+                                              + d1term1 * (sources_q_dx_ptr[k] * dx
+                                                         + sources_q_dy_ptr[k] * dy
+                                                         + sources_q_dz_ptr[k] * dz));
+
+                    pot_comp_dx  += (sources_q_ptr   [k]  * (d1term2 * dx)
+                                  - (sources_q_dx_ptr[k]  * (dx * dx * d2term + d3term)
+                                  +  sources_q_dy_ptr[k]  * (dx * dy * d2term)
+                                  +  sources_q_dz_ptr[k]  * (dx * dz * d2term)));
+
+                    pot_comp_dy  += (sources_q_ptr   [k]  *  d1term2 * dy
+                                  - (sources_q_dx_ptr[k]  * (dx * dy * d2term)
+                                  +  sources_q_dy_ptr[k]  * (dy * dy * d2term + d3term)
+                                  +  sources_q_dz_ptr[k]  * (dy * dz * d2term)));
+
+                    pot_comp_dz  += (sources_q_ptr   [k]  *  d1term2 * dz
+                                  - (sources_q_dx_ptr[k]  * (dx * dz * d2term)
+                                  +  sources_q_dy_ptr[k]  * (dy * dz * d2term)
+                                  +  sources_q_dz_ptr[k]  * (dz * dz * d2term + d3term)));
+                }
+            }
+
+            for (std::size_t s = cc_start; s < cc_end; ++s) {
+                std::size_t source_node_idx = cc_sources_ptr[s];
+
+                std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
+                std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
+
+#ifdef OPENACC_ENABLED
+                if (num_interp_pts_per_node <= kMaxInterpPts) {
+                    double dx_cache[kMaxInterpPts];
+                    double dy_cache[kMaxInterpPts];
+                    double dz_cache[kMaxInterpPts];
+                    double dx2_cache[kMaxInterpPts];
+                    double dy2_cache[kMaxInterpPts];
+                    double dz2_cache[kMaxInterpPts];
+
+                    #pragma acc loop seq
+                    for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
+                        double dx = target_x - clusters_x_ptr[source_cluster_interp_pts_begin + k1];
+                        dx_cache[k1] = dx;
+                        dx2_cache[k1] = dx * dx;
+                    }
+                    #pragma acc loop seq
+                    for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
+                        double dy = target_y - clusters_y_ptr[source_cluster_interp_pts_begin + k2];
+                        dy_cache[k2] = dy;
+                        dy2_cache[k2] = dy * dy;
+                    }
+                    #pragma acc loop seq
+                    for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
+                        double dz = target_z - clusters_z_ptr[source_cluster_interp_pts_begin + k3];
+                        dz_cache[k3] = dz;
+                        dz2_cache[k3] = dz * dz;
+                    }
+
+                    #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
+                    for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
+                    for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
+                    for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
+                        std::size_t kk = source_cluster_charges_begin
+                                       + k1 * num_interp_pts_per_node * num_interp_pts_per_node
+                                       + k2 * num_interp_pts_per_node + k3;
+
+                        double dx = dx_cache[k1];
+                        double dy = dy_cache[k2];
+                        double dz = dz_cache[k3];
+                        double r2 = dx2_cache[k1] + dy2_cache[k2] + dz2_cache[k3];
+                        double r  = std::sqrt(r2);
+                        double rinv  = 1.0 / r;
+                        double r3inv = rinv  * rinv * rinv;
+                        double r5inv = r3inv * rinv * rinv;
+
+                        double kappa_r = kappa * r;
+                        double expkr   =  std::exp(-kappa_r);
+                        double d1term  =  r3inv * expkr * (1. + kappa_r);
+                        double d1term1 = -r3inv + d1term * eps;
+                        double d1term2 = -r3inv + d1term / eps;
+                        double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                               + (kappa2 * r2)));
+                        double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                        pot_comp_    += (rinv * (1. - expkr) * (clusters_q_ptr   [kk])
+                                                  + d1term1 * (clusters_q_dx_ptr[kk] * dx
+                                                             + clusters_q_dy_ptr[kk] * dy
+                                                             + clusters_q_dz_ptr[kk] * dz));
+
+                        pot_comp_dx  += (clusters_q_ptr   [kk]  * (d1term2 * dx)
+                                      - (clusters_q_dx_ptr[kk]  * (dx * dx * d2term + d3term)
+                                      +  clusters_q_dy_ptr[kk]  * (dx * dy * d2term)
+                                      +  clusters_q_dz_ptr[kk]  * (dx * dz * d2term)));
+
+                        pot_comp_dy  += (clusters_q_ptr   [kk]  *  d1term2 * dy
+                                      - (clusters_q_dx_ptr[kk]  * (dx * dy * d2term)
+                                      +  clusters_q_dy_ptr[kk]  * (dy * dy * d2term + d3term)
+                                      +  clusters_q_dz_ptr[kk]  * (dy * dz * d2term)));
+
+                        pot_comp_dz  += (clusters_q_ptr   [kk]  *  d1term2 * dz
+                                      - (clusters_q_dx_ptr[kk]  * (dx * dz * d2term)
+                                      +  clusters_q_dy_ptr[kk]  * (dy * dz * d2term)
+                                      +  clusters_q_dz_ptr[kk]  * (dz * dz * d2term + d3term)));
+                    }
+                    }
+                    }
+                    continue;
+                }
+#endif
+
+#ifdef OPENACC_ENABLED
+                #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
+#endif
+                for (int k1 = 0; k1 < num_interp_pts_per_node; k1++) {
+                for (int k2 = 0; k2 < num_interp_pts_per_node; k2++) {
+                for (int k3 = 0; k3 < num_interp_pts_per_node; k3++) {
+                    std::size_t kk = source_cluster_charges_begin
+                                   + k1 * num_interp_pts_per_node * num_interp_pts_per_node
+                                   + k2 * num_interp_pts_per_node + k3;
+
+                    double dx = target_x - clusters_x_ptr[source_cluster_interp_pts_begin + k1];
+                    double dy = target_y - clusters_y_ptr[source_cluster_interp_pts_begin + k2];
+                    double dz = target_z - clusters_z_ptr[source_cluster_interp_pts_begin + k3];
+
+                    double r2    = dx*dx + dy*dy + dz*dz;
+                    double r     = std::sqrt(r2);
+                    double rinv  = 1.0 / r;
+                    double r3inv = rinv  * rinv * rinv;
+                    double r5inv = r3inv * rinv * rinv;
+
+                    double kappa_r = kappa * r;
+                    double expkr   =  std::exp(-kappa_r);
+                    double d1term  =  r3inv * expkr * (1. + kappa_r);
+                    double d1term1 = -r3inv + d1term * eps;
+                    double d1term2 = -r3inv + d1term / eps;
+                    double d2term  =  r5inv * (-3. + expkr * (3. + (3. * kappa_r)
+                                                           + (kappa2 * r2)));
+                    double d3term  =  r3inv * ( 1. - expkr * (1. + kappa_r));
+
+                    pot_comp_    += (rinv * (1. - expkr) * (clusters_q_ptr   [kk])
+                                              + d1term1 * (clusters_q_dx_ptr[kk] * dx
+                                                         + clusters_q_dy_ptr[kk] * dy
+                                                         + clusters_q_dz_ptr[kk] * dz));
+
+                    pot_comp_dx  += (clusters_q_ptr   [kk]  * (d1term2 * dx)
+                                  - (clusters_q_dx_ptr[kk]  * (dx * dx * d2term + d3term)
+                                  +  clusters_q_dy_ptr[kk]  * (dx * dy * d2term)
+                                  +  clusters_q_dz_ptr[kk]  * (dx * dz * d2term)));
+
+                    pot_comp_dy  += (clusters_q_ptr   [kk]  *  d1term2 * dy
+                                  - (clusters_q_dx_ptr[kk]  * (dx * dy * d2term)
+                                  +  clusters_q_dy_ptr[kk]  * (dy * dy * d2term + d3term)
+                                  +  clusters_q_dz_ptr[kk]  * (dy * dz * d2term)));
+
+                    pot_comp_dz  += (clusters_q_ptr   [kk]  *  d1term2 * dz
+                                  - (clusters_q_dx_ptr[kk]  * (dx * dz * d2term)
+                                  +  clusters_q_dy_ptr[kk]  * (dy * dz * d2term)
+                                  +  clusters_q_dz_ptr[kk]  * (dz * dz * d2term + d3term)));
+                }
+                }
+                }
+            }
+
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_ptr   [jj] += pot_comp_;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_dx_ptr[jj] += pot_comp_dx;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_dy_ptr[jj] += pot_comp_dy;
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
+#endif
+            clusters_p_dz_ptr[jj] += pot_comp_dz;
+        }
+        }
+        }
     }
 
     timers_.cluster_cluster_interact.stop();
@@ -697,20 +2262,14 @@ void BoundaryElement::upward_pass()
     const double* __restrict sources_q_dy_ptr = elements_.source_charge_dy_ptr();
     const double* __restrict sources_q_dz_ptr = elements_.source_charge_dz_ptr();
         
-    std::vector<double> weights (interp_pts_.num_interp_pts_per_node());
-    double* weights_ptr = weights.data();
-    int weights_num = weights.size();
-    
-    for (int i = 0; i < weights_num; ++i) {
-        weights[i] = ((i % 2 == 0)? 1 : -1);
-        if (i == 0 || i == weights_num-1) weights[i] = ((i % 2 == 0)? 1 : -1) * 0.5;
-    }
-
+    double* weights_ptr = weights_.data();
     int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
-    
-#ifdef OPENACC_ENABLED
-    #pragma acc enter data copyin(weights_ptr[0:weights_num])
-#endif
+
+    std::size_t max_particles = exact_idx_x_.size();
+    int* exact_idx_x_ptr = exact_idx_x_.data();
+    int* exact_idx_y_ptr = exact_idx_y_.data();
+    int* exact_idx_z_ptr = exact_idx_z_.data();
+    double* denominator_ptr = denominator_.data();
     
     for (std::size_t node_idx = 0; node_idx < tree_.num_nodes(); ++node_idx) {
         
@@ -722,25 +2281,13 @@ void BoundaryElement::upward_pass()
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
         
-        std::vector<int> exact_idx_x(num_particles);
-        std::vector<int> exact_idx_y(num_particles);
-        std::vector<int> exact_idx_z(num_particles);
-        std::vector<double> denominator(num_particles);
-        
-        int* exact_idx_x_ptr = exact_idx_x.data();
-        int* exact_idx_y_ptr = exact_idx_y.data();
-        int* exact_idx_z_ptr = exact_idx_z.data();
-        double* denominator_ptr = denominator.data();
-        
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
     #pragma acc kernels present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
                          sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
                          clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
                          clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                         weights_ptr) \
-                  create(exact_idx_x_ptr[0:num_particles], exact_idx_y_ptr[0:num_particles], \
-                         exact_idx_z_ptr[0:num_particles], denominator_ptr[0:num_particles])
+                         weights_ptr, exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
+                         exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
 #endif
         {
 
@@ -873,10 +2420,6 @@ void BoundaryElement::upward_pass()
         
         } // end parallel region
     } // end loop over nodes
-#ifdef OPENACC_ENABLED
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
-#endif
-
     timers_.upward_pass.stop();
 }
 
@@ -903,21 +2446,10 @@ void BoundaryElement::downward_pass(double* __restrict potential)
     const double* __restrict targets_q_dy_ptr  = elements_.target_charge_dy_ptr();
     const double* __restrict targets_q_dz_ptr  = elements_.target_charge_dz_ptr();
     
-    std::vector<double> weights (interp_pts_.num_interp_pts_per_node());
-    double* weights_ptr = weights.data();
-    int weights_num = weights.size();
-    
-    for (int i = 0; i < weights_num; ++i) {
-        weights[i] = ((i % 2 == 0)? 1 : -1);
-        if (i == 0 || i == weights_num-1) weights[i] = ((i % 2 == 0)? 1 : -1) * 0.5;
-    }
-    
+    double* weights_ptr = weights_.data();
+
     std::size_t potential_offset = elements_.num();
     int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
-    
-#ifdef OPENACC_ENABLED
-#pragma acc enter data copyin(weights_ptr[0:weights_num])
-#endif
     
     for (std::size_t node_idx = 0; node_idx < tree_.num_nodes(); ++node_idx) {
         
@@ -929,8 +2461,7 @@ void BoundaryElement::downward_pass(double* __restrict potential)
         std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
 
 #ifdef OPENACC_ENABLED
-        int stream_id = std::rand() % 3;
-#pragma acc parallel loop async(stream_id) present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+#pragma acc parallel loop present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
                                   targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
                                   clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
                                   clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
@@ -1033,21 +2564,16 @@ void BoundaryElement::downward_pass(double* __restrict potential)
             double pot_temp_2 = targets_q_dx_ptr[particle_start + i] * pot_comp_dx
                               + targets_q_dy_ptr[particle_start + i] * pot_comp_dy
                               + targets_q_dz_ptr[particle_start + i] * pot_comp_dz;
-#ifdef OPENACC_ENABLED
-            #pragma acc atomic update
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
 #endif
             potential[particle_start + i]                    += pot_temp_1;
-#ifdef OPENACC_ENABLED
-            #pragma acc atomic update
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+            #pragma omp atomic update
 #endif
             potential[particle_start + i + potential_offset] += pot_temp_2;
         }
     } //end loop over nodes
-#ifdef OPENACC_ENABLED
-    #pragma acc wait
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
-#endif
-
     timers_.downward_pass.stop();
 }
 
@@ -1136,10 +2662,63 @@ void BoundaryElement::copyin_clusters_to_device() const
     std::size_t p_dx_num = interp_potential_dx_.size();
     std::size_t p_dy_num = interp_potential_dy_.size();
     std::size_t p_dz_num = interp_potential_dz_.size();
+
+    const double* weights_ptr = weights_.data();
+    std::size_t weights_num = weights_.size();
+
+    const int* exact_idx_x_ptr = exact_idx_x_.data();
+    const int* exact_idx_y_ptr = exact_idx_y_.data();
+    const int* exact_idx_z_ptr = exact_idx_z_.data();
+    const double* denominator_ptr = denominator_.data();
+    std::size_t max_particles = exact_idx_x_.size();
+
+    const std::size_t* node_begin_ptr = node_particles_begin_.data();
+    const std::size_t* node_end_ptr = node_particles_end_.data();
+    std::size_t node_count = node_particles_begin_.size();
+
+    const std::size_t* element_node_idx_ptr = element_node_idx_.data();
+    std::size_t element_node_count = element_node_idx_.size();
+
+    const auto& pp_offsets = interaction_list_.particle_particle_offsets();
+    const auto& pc_offsets = interaction_list_.particle_cluster_offsets();
+    const auto& cp_offsets = interaction_list_.cluster_particle_offsets();
+    const auto& cc_offsets = interaction_list_.cluster_cluster_offsets();
+    const auto& pp_sources = interaction_list_.particle_particle_flat();
+    const auto& pc_sources = interaction_list_.particle_cluster_flat();
+    const auto& cp_sources = interaction_list_.cluster_particle_flat();
+    const auto& cc_sources = interaction_list_.cluster_cluster_flat();
+
+    const std::size_t* pp_offsets_ptr = pp_offsets.data();
+    const std::size_t* pc_offsets_ptr = pc_offsets.data();
+    const std::size_t* cp_offsets_ptr = cp_offsets.data();
+    const std::size_t* cc_offsets_ptr = cc_offsets.data();
+    const std::size_t* pp_sources_ptr = pp_sources.data();
+    const std::size_t* pc_sources_ptr = pc_sources.data();
+    const std::size_t* cp_sources_ptr = cp_sources.data();
+    const std::size_t* cc_sources_ptr = cc_sources.data();
+
+    std::size_t pp_offsets_num = pp_offsets.size();
+    std::size_t pc_offsets_num = pc_offsets.size();
+    std::size_t cp_offsets_num = cp_offsets.size();
+    std::size_t cc_offsets_num = cc_offsets.size();
+    std::size_t pp_sources_num = pp_sources.size();
+    std::size_t pc_sources_num = pc_sources.size();
+    std::size_t cp_sources_num = cp_sources.size();
+    std::size_t cc_sources_num = cc_sources.size();
     
     #pragma acc enter data create( \
                 q_ptr[0:q_num], q_dx_ptr[0:q_dx_num], q_dy_ptr[0:q_dy_num], q_dz_ptr[0:q_dz_num], \
                 p_ptr[0:p_num], p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num])
+    #pragma acc enter data copyin(weights_ptr[0:weights_num])
+    #pragma acc enter data create(exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
+                                  exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
+    #pragma acc enter data copyin(node_begin_ptr[0:node_count], node_end_ptr[0:node_count])
+    #pragma acc enter data copyin(element_node_idx_ptr[0:element_node_count])
+    #pragma acc enter data copyin( \
+                pp_offsets_ptr[0:pp_offsets_num], pc_offsets_ptr[0:pc_offsets_num], \
+                cp_offsets_ptr[0:cp_offsets_num], cc_offsets_ptr[0:cc_offsets_num], \
+                pp_sources_ptr[0:pp_sources_num], pc_sources_ptr[0:pc_sources_num], \
+                cp_sources_ptr[0:cp_sources_num], cc_sources_ptr[0:cc_sources_num])
 #endif
 
     timers_.copyin_clusters_to_device.stop();
@@ -1170,10 +2749,63 @@ void BoundaryElement::delete_clusters_from_device() const
     std::size_t p_dx_num = interp_potential_dx_.size();
     std::size_t p_dy_num = interp_potential_dy_.size();
     std::size_t p_dz_num = interp_potential_dz_.size();
+
+    const double* weights_ptr = weights_.data();
+    std::size_t weights_num = weights_.size();
+
+    const int* exact_idx_x_ptr = exact_idx_x_.data();
+    const int* exact_idx_y_ptr = exact_idx_y_.data();
+    const int* exact_idx_z_ptr = exact_idx_z_.data();
+    const double* denominator_ptr = denominator_.data();
+    std::size_t max_particles = exact_idx_x_.size();
+
+    const std::size_t* node_begin_ptr = node_particles_begin_.data();
+    const std::size_t* node_end_ptr = node_particles_end_.data();
+    std::size_t node_count = node_particles_begin_.size();
+
+    const std::size_t* element_node_idx_ptr = element_node_idx_.data();
+    std::size_t element_node_count = element_node_idx_.size();
+
+    const auto& pp_offsets = interaction_list_.particle_particle_offsets();
+    const auto& pc_offsets = interaction_list_.particle_cluster_offsets();
+    const auto& cp_offsets = interaction_list_.cluster_particle_offsets();
+    const auto& cc_offsets = interaction_list_.cluster_cluster_offsets();
+    const auto& pp_sources = interaction_list_.particle_particle_flat();
+    const auto& pc_sources = interaction_list_.particle_cluster_flat();
+    const auto& cp_sources = interaction_list_.cluster_particle_flat();
+    const auto& cc_sources = interaction_list_.cluster_cluster_flat();
+
+    const std::size_t* pp_offsets_ptr = pp_offsets.data();
+    const std::size_t* pc_offsets_ptr = pc_offsets.data();
+    const std::size_t* cp_offsets_ptr = cp_offsets.data();
+    const std::size_t* cc_offsets_ptr = cc_offsets.data();
+    const std::size_t* pp_sources_ptr = pp_sources.data();
+    const std::size_t* pc_sources_ptr = pc_sources.data();
+    const std::size_t* cp_sources_ptr = cp_sources.data();
+    const std::size_t* cc_sources_ptr = cc_sources.data();
+
+    std::size_t pp_offsets_num = pp_offsets.size();
+    std::size_t pc_offsets_num = pc_offsets.size();
+    std::size_t cp_offsets_num = cp_offsets.size();
+    std::size_t cc_offsets_num = cc_offsets.size();
+    std::size_t pp_sources_num = pp_sources.size();
+    std::size_t pc_sources_num = pc_sources.size();
+    std::size_t cp_sources_num = cp_sources.size();
+    std::size_t cc_sources_num = cc_sources.size();
     
     #pragma acc exit data delete( \
                 q_ptr[0:q_num], q_dx_ptr[0:q_dx_num], q_dy_ptr[0:q_dy_num], q_dz_ptr[0:q_dz_num], \
                 p_ptr[0:p_num], p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num])
+    #pragma acc exit data delete(weights_ptr[0:weights_num])
+    #pragma acc exit data delete(exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
+                                 exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
+    #pragma acc exit data delete(node_begin_ptr[0:node_count], node_end_ptr[0:node_count])
+    #pragma acc exit data delete(element_node_idx_ptr[0:element_node_count])
+    #pragma acc exit data delete( \
+                pp_offsets_ptr[0:pp_offsets_num], pc_offsets_ptr[0:pc_offsets_num], \
+                cp_offsets_ptr[0:cp_offsets_num], cc_offsets_ptr[0:cc_offsets_num], \
+                pp_sources_ptr[0:pp_sources_num], pc_sources_ptr[0:pc_sources_num], \
+                cp_sources_ptr[0:cp_sources_num], cc_sources_ptr[0:cc_sources_num])
 #endif
 
     timers_.delete_clusters_from_device.stop();

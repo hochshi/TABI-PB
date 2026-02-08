@@ -45,7 +45,7 @@ public:
     
     void run() {
         upward_pass();
-#ifdef OPENMP_ENABLED
+#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
         #pragma omp parallel for
 #endif
         for (std::size_t target_node_idx = 0; target_node_idx < target_tree_.num_nodes(); ++target_node_idx) {

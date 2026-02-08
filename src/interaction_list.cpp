@@ -19,6 +19,7 @@ InteractionList::InteractionList(const class Tree& tree, const int degree, const
     
     //for (auto batch_idx : tree_.leaves_) InteractionList::build_BLTC_lists(batch_idx, 0);
     InteractionList::build_BLDTT_lists(0,0);
+    InteractionList::build_flattened_lists();
 
     timers_.ctor.stop();
 }
@@ -37,8 +38,36 @@ InteractionList::InteractionList(const class Tree& target_tree, const class Tree
     
     //for (auto batch_idx : tree_.leaves_) InteractionList::build_BLTC_lists(batch_idx, 0);
     InteractionList::build_BLDTT_lists(0,0);
+    InteractionList::build_flattened_lists();
 
     timers_.ctor.stop();
+}
+
+void InteractionList::build_flattened_lists()
+{
+    auto build = [](const std::vector<std::vector<std::size_t>>& lists,
+                    std::vector<std::size_t>& flat,
+                    std::vector<std::size_t>& offsets) {
+        offsets.resize(lists.size() + 1);
+        std::size_t total = 0;
+        for (std::size_t i = 0; i < lists.size(); ++i) {
+            offsets[i] = total;
+            total += lists[i].size();
+        }
+        offsets[lists.size()] = total;
+        flat.resize(total);
+        std::size_t idx = 0;
+        for (std::size_t i = 0; i < lists.size(); ++i) {
+            for (auto v : lists[i]) {
+                flat[idx++] = v;
+            }
+        }
+    };
+
+    build(particle_particle_, particle_particle_flat_, particle_particle_offsets_);
+    build(particle_cluster_,  particle_cluster_flat_,  particle_cluster_offsets_);
+    build(cluster_particle_,  cluster_particle_flat_,  cluster_particle_offsets_);
+    build(cluster_cluster_,   cluster_cluster_flat_,   cluster_cluster_offsets_);
 }
 
 
