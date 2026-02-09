@@ -17,10 +17,11 @@ add_executable(tabipb main.cpp
         tabipb_timers.h timer.h constants.h)
 
 if (ENABLE_CUDA_CC)
-    target_sources(tabipb PRIVATE cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h)
+    target_sources(tabipb PRIVATE cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h source_term_cuda.cu source_term_cuda.h)
     target_compile_definitions(tabipb PRIVATE USE_CUDA_CC)
     set_source_files_properties(cc_cuda.cu PROPERTIES CUDA_STANDARD 11)
     set_source_files_properties(up_cuda.cu PROPERTIES CUDA_STANDARD 11)
+    set_source_files_properties(source_term_cuda.cu PROPERTIES CUDA_STANDARD 11)
     target_link_libraries(tabipb PRIVATE CUDA::cudart CUDA::cuda_driver)
 endif ()
 
@@ -101,7 +102,7 @@ if (ENABLE_TABIPB_APBS)
         tabipb_wrap/molecule_apbs_ctor.cpp)
 
     if (ENABLE_CUDA_CC)
-        list(APPEND LIBFILES cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h)
+        list(APPEND LIBFILES cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h source_term_cuda.cu source_term_cuda.h)
     endif ()
   
     set(TABIPB_LIBNAME TABIPBlib)
@@ -116,6 +117,7 @@ if (ENABLE_TABIPB_APBS)
         target_compile_definitions(${TABIPB_LIBNAME} PRIVATE USE_CUDA_CC)
         set_source_files_properties(cc_cuda.cu PROPERTIES CUDA_STANDARD 11)
         set_source_files_properties(up_cuda.cu PROPERTIES CUDA_STANDARD 11)
+        set_source_files_properties(source_term_cuda.cu PROPERTIES CUDA_STANDARD 11)
         target_link_libraries(${TABIPB_LIBNAME} PRIVATE CUDA::cudart CUDA::cuda_driver)
     endif ()
 

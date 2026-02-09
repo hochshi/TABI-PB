@@ -1644,6 +1644,16 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
 #endif
 
 #ifdef OPENACC_ENABLED
+    const char* require_cuda_env = std::getenv("TABIPB_CUDA_REQUIRE_CC");
+    const bool require_cuda_cc = (require_cuda_env && std::strcmp(require_cuda_env, "0") != 0);
+    if (require_cuda_cc && num_interp_pts_per_node > kBatchedMaxInterpPts) {
+        std::cerr << "[CUDA_CC] require set but num_interp_pts_per_node="
+                  << num_interp_pts_per_node
+                  << " exceeds CUDA CC/CP limit " << kBatchedMaxInterpPts
+                  << ". Aborting to avoid OpenACC fallback.\n";
+        std::exit(1);
+    }
+
     std::size_t cp_offsets_num = cp_offsets_u32_.size();
     std::size_t cp_sources_num = cp_sources_u32_.size();
     std::size_t cc_offsets_num = cc_offsets_u32_.size();
@@ -1682,6 +1692,12 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         present_ok = present_ok && acc_is_present((void*)cp_sources_ptr, cp_sources_num * sizeof(std::uint32_t));
         present_ok = present_ok && acc_is_present((void*)cc_offsets_ptr, cc_offsets_num * sizeof(std::uint32_t));
         present_ok = present_ok && acc_is_present((void*)cc_sources_ptr, cc_sources_num * sizeof(std::uint32_t));
+
+        if (require_cuda_cc && !present_ok) {
+            std::cerr << "[CUDA_CC] require set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
 
         if (present_ok) {
             int acc_dev = acc_get_device_num(acc_device_nvidia);
@@ -1749,6 +1765,12 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
             }
             timers_.cluster_cluster_interact.stop();
             return;
+        }
+#else
+        if (require_cuda_cc) {
+            std::cerr << "[CUDA_CC] require set but binary was built without USE_CUDA_CC. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
         }
 #endif
 
@@ -2427,6 +2449,15 @@ void BoundaryElement::upward_pass()
     if (debug_cuda_upward) {
         std::cerr << "[CUDA_UP] debug mode enabled\n";
     }
+    const char* require_up_env = std::getenv("TABIPB_CUDA_REQUIRE_UPWARD");
+    const bool require_cuda_upward = (require_up_env && std::strcmp(require_up_env, "0") != 0);
+    if (require_cuda_upward && num_interp_pts_per_node > kMaxInterpPts) {
+        std::cerr << "[CUDA_UP] require set but num_interp_pts_per_node="
+                  << num_interp_pts_per_node
+                  << " exceeds CUDA upward limit " << kMaxInterpPts
+                  << ". Aborting to avoid OpenACC fallback.\n";
+        std::exit(1);
+    }
     if (num_interp_pts_per_node <= kMaxInterpPts) {
         const char* mode_env = std::getenv("TABIPB_CUDA_UPWARD_MODE");
         bool use_split = false;
@@ -2478,6 +2509,12 @@ void BoundaryElement::upward_pass()
                           << " denom=" << present_denom
                           << "\n";
             }
+        }
+
+        if (require_cuda_upward && !present_ok) {
+            std::cerr << "[CUDA_UP] require set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
         }
 
         if (debug_cuda_upward) {

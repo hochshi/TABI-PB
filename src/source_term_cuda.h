@@ -1,0 +1,92 @@
+#pragma once
+
+#include <cstddef>
+
+extern "C" {
+
+void source_term_pp_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_nx,
+    const double* elem_ny,
+    const double* elem_nz,
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    std::size_t target_begin,
+    std::size_t target_end,
+    std::size_t source_begin,
+    std::size_t source_end,
+    double one_over_4pi_eps_solute,
+    double* source_term,
+    std::size_t source_term_offset,
+    void* stream);
+
+void source_term_pc_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_nx,
+    const double* elem_ny,
+    const double* elem_nz,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    std::size_t source_node_idx,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    std::size_t target_begin,
+    std::size_t target_end,
+    double one_over_4pi_eps_solute,
+    double* source_term,
+    std::size_t source_term_offset,
+    void* stream);
+
+void source_term_cp_cuda(
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    std::size_t target_node_idx,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    std::size_t source_begin,
+    std::size_t source_end,
+    double one_over_4pi_eps_solute,
+    void* stream);
+
+void source_term_down_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_q_dx,
+    const double* elem_q_dy,
+    const double* elem_q_dz,
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    const double* elem_clusters_p,
+    const double* elem_clusters_p_dx,
+    const double* elem_clusters_p_dy,
+    const double* elem_clusters_p_dz,
+    const double* weights,
+    std::size_t node_idx,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    std::size_t particle_start,
+    std::size_t num_particles,
+    double* source_term,
+    std::size_t source_term_offset,
+    void* stream);
+
+} // extern "C"

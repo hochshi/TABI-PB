@@ -1,10 +1,27 @@
 #include <cmath>
 // #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
+
+#ifdef OPENACC_ENABLED
+#include <openacc.h>
+#endif
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#include <cuda.h>
+extern "C" {
+    CUcontext acc_get_cuda_context(void) __attribute__((weak));
+}
+#include "source_term_cuda.h"
+#endif
 
 #include "elements.h"
 #include "constants.h"
 #include "source_term_compute.h"
+
+namespace {
+constexpr int kSourceTermAsync = 7;
+}
 
 
 SourceTermCompute::SourceTermCompute(std::vector<double>& source_term,
@@ -40,6 +57,38 @@ SourceTermCompute::SourceTermCompute(std::vector<double>& source_term,
     num_mol_charges_                 = source_tree_.num_nodes() * num_mol_interp_charges_per_node_;
     
     mol_interp_charge_.assign(num_mol_charges_, 0.);
+
+    max_mol_particles_per_node_ = 0;
+    for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
+        auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+        std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+        if (num_particles > max_mol_particles_per_node_) {
+            max_mol_particles_per_node_ = num_particles;
+        }
+    }
+
+    mol_weights_.resize(num_mol_interp_pts_per_node_);
+    for (int i = 0; i < num_mol_interp_pts_per_node_; ++i) {
+        double w = (i % 2 == 0) ? 1.0 : -1.0;
+        if (i == 0 || i == num_mol_interp_pts_per_node_ - 1) {
+            w *= 0.5;
+        }
+        mol_weights_[i] = w;
+    }
+
+    elem_weights_.resize(num_elem_interp_pts_per_node_);
+    for (int i = 0; i < num_elem_interp_pts_per_node_; ++i) {
+        double w = (i % 2 == 0) ? 1.0 : -1.0;
+        if (i == 0 || i == num_elem_interp_pts_per_node_ - 1) {
+            w *= 0.5;
+        }
+        elem_weights_[i] = w;
+    }
+
+    exact_idx_x_.assign(max_mol_particles_per_node_, -1);
+    exact_idx_y_.assign(max_mol_particles_per_node_, -1);
+    exact_idx_z_.assign(max_mol_particles_per_node_, -1);
+    denominator_.assign(max_mol_particles_per_node_, 0.0);
     
 //    timers_.ctor.stop();
 }
@@ -90,10 +139,59 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
     
     double* __restrict source_term_ptr = source_term_.data();
 
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PP");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_elements = elements_.num();
+        std::size_t num_atoms = molecule_.num();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)elem_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)source_term_ptr, source_term_.size() * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
+                                             mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+                                             source_term_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                source_term_pp_cuda(
+                    elem_x_ptr, elem_y_ptr, elem_z_ptr,
+                    elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
+                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                    target_node_begin, target_node_end,
+                    source_node_begin, source_node_end,
+                    one_over_4pi_eps_solute_,
+                    source_term_ptr, source_term_offset_,
+                    stream);
+            }
+            return;
+        }
+    }
+#endif
+
 
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(elem_x_ptr,    elem_y_ptr,    elem_z_ptr, \
+    #pragma acc parallel loop async(kSourceTermAsync) present(elem_x_ptr,    elem_y_ptr,    elem_z_ptr, \
                                       elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
                                       mol_x_ptr,     mol_y_ptr,     mol_z_ptr,     mol_q_ptr, \
                                       source_term_ptr)
@@ -184,9 +282,63 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
     double* __restrict source_term_ptr = source_term_.data();
     
     
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PC");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_elements = elements_.num();
+        std::size_t num_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
+        std::size_t num_charges = mol_interp_charge_.size();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)elem_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)source_term_ptr, source_term_.size() * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
+                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                             mol_clusters_q_ptr, source_term_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                source_term_pc_cuda(
+                    elem_x_ptr, elem_y_ptr, elem_z_ptr,
+                    elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
+                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                    mol_clusters_q_ptr,
+                    source_node_idx,
+                    num_mol_interp_pts_per_node_,
+                    num_mol_interp_charges_per_node_,
+                    target_node_begin,
+                    target_node_end,
+                    one_over_4pi_eps_solute_,
+                    source_term_ptr, source_term_offset_,
+                    stream);
+            }
+            return;
+        }
+    }
+#endif
+
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+    #pragma acc parallel loop async(kSourceTermAsync) present(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
                     elem_q_dx_ptr,      elem_q_dy_ptr,      elem_q_dz_ptr, \
                     mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
                     mol_clusters_q_ptr, source_term_ptr)
@@ -284,10 +436,63 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
 
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CP");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_elem_interp_pts = static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
+        std::size_t num_elem_interp_potentials = elem_interp_potential_.size();
+        std::size_t num_atoms = molecule_.num();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            #pragma acc host_data use_device(elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
+                                             elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
+                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr, \
+                                             mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                source_term_cp_cuda(
+                    elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
+                    elem_clusters_p_ptr, elem_clusters_p_dx_ptr,
+                    elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
+                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                    target_node_idx,
+                    num_elem_interp_pts_per_node_,
+                    num_elem_interp_potentials_per_node_,
+                    source_node_begin,
+                    source_node_end,
+                    one_over_4pi_eps_solute_,
+                    stream);
+            }
+            return;
+        }
+    }
+#endif
+
 
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+    #pragma acc parallel loop collapse(3) async(kSourceTermAsync) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
                     elem_clusters_x_ptr, elem_clusters_y_ptr,    elem_clusters_z_ptr, \
                     elem_clusters_p_ptr, elem_clusters_p_dx_ptr, elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
 #endif
@@ -399,8 +604,7 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
 
 
 #ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+    #pragma acc parallel loop collapse(3) async(kSourceTermAsync) present(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
                     mol_clusters_q_ptr,  elem_clusters_x_ptr,    elem_clusters_y_ptr,    elem_clusters_z_ptr, \
                     elem_clusters_p_ptr, elem_clusters_p_dx_ptr, elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
 #endif
@@ -501,19 +705,11 @@ void SourceTermCompute::upward_pass()
     double*       __restrict mol_clusters_q_ptr = mol_interp_charge_.data();
     
         
-    std::vector<double> weights (num_mol_interp_pts_per_node);
-    double* weights_ptr = weights.data();
-    int weights_num = weights.size();
-    
-    for (int i = 0; i < weights_num; ++i) {
-        weights[i] = ((i % 2 == 0)? 1 : -1);
-        if (i == 0 || i == weights_num-1) weights[i] = ((i % 2 == 0)? 1 : -1) * 0.5;
-    }
-
-    
-#ifdef OPENACC_ENABLED
-    #pragma acc enter data copyin(weights_ptr[0:weights_num])
-#endif
+    double* weights_ptr = mol_weights_.data();
+    int* exact_idx_x_ptr = exact_idx_x_.data();
+    int* exact_idx_y_ptr = exact_idx_y_.data();
+    int* exact_idx_z_ptr = exact_idx_z_.data();
+    double* denominator_ptr = denominator_.data();
     
     for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
         
@@ -525,22 +721,14 @@ void SourceTermCompute::upward_pass()
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
         
-        std::vector<int> exact_idx_x(num_particles);
-        std::vector<int> exact_idx_y(num_particles);
-        std::vector<int> exact_idx_z(num_particles);
-        std::vector<double> denominator(num_particles);
-        
-        int* exact_idx_x_ptr = exact_idx_x.data();
-        int* exact_idx_y_ptr = exact_idx_y.data();
-        int* exact_idx_z_ptr = exact_idx_z.data();
-        double* denominator_ptr = denominator.data();
-        
 #ifdef OPENACC_ENABLED
 #pragma acc kernels present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                            mol_clusters_q_ptr, weights_ptr) \
-                  create(exact_idx_x_ptr[0:num_particles], exact_idx_y_ptr[0:num_particles], \
-                         exact_idx_z_ptr[0:num_particles], denominator_ptr[0:num_particles])
+                            mol_clusters_q_ptr, weights_ptr, \
+                            exact_idx_x_ptr[0:max_mol_particles_per_node_], \
+                            exact_idx_y_ptr[0:max_mol_particles_per_node_], \
+                            exact_idx_z_ptr[0:max_mol_particles_per_node_], \
+                            denominator_ptr[0:max_mol_particles_per_node_])
 #endif
         {
 
@@ -664,9 +852,6 @@ void SourceTermCompute::upward_pass()
         
         } // end parallel region
     } // end loop over nodes
-#ifdef OPENACC_ENABLED
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
-#endif
 
 //    timers_.upward_pass.stop();
 }
@@ -698,18 +883,78 @@ void SourceTermCompute::downward_pass()
     const double* __restrict elem_clusters_p_dy_ptr = elem_interp_potential_dy_.data();
     const double* __restrict elem_clusters_p_dz_ptr = elem_interp_potential_dz_.data();
     
-    std::vector<double> weights (num_elem_interp_pts_per_node);
-    double* weights_ptr = weights.data();
-    int weights_num = weights.size();
-    
-    for (int i = 0; i < weights_num; ++i) {
-        weights[i] = ((i % 2 == 0)? 1 : -1);
-        if (i == 0 || i == weights_num-1) weights[i] = ((i % 2 == 0)? 1 : -1) * 0.5;
-    }
+    double* weights_ptr = elem_weights_.data();
 
-    
-#ifdef OPENACC_ENABLED
-#pragma acc enter data copyin(weights_ptr[0:weights_num])
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_DOWN");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_elements = elements_.num();
+        std::size_t num_elem_interp_pts = static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
+        std::size_t num_elem_interp_potentials = elem_interp_potential_.size();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)elem_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)weights_ptr, elem_weights_.size() * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)source_term_ptr, source_term_.size() * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
+                                             elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
+                                             elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
+                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr, \
+                                             weights_ptr, source_term_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
+                    auto particle_idxs = target_tree_.node_particle_idxs(node_idx);
+                    std::size_t particle_start = particle_idxs[0];
+                    std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+                    if (num_particles == 0) {
+                        continue;
+                    }
+                    source_term_down_cuda(
+                        elem_x_ptr, elem_y_ptr, elem_z_ptr,
+                        elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
+                        elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
+                        elem_clusters_p_ptr, elem_clusters_p_dx_ptr,
+                        elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
+                        weights_ptr,
+                        node_idx,
+                        num_elem_interp_pts_per_node_,
+                        num_elem_interp_potentials_per_node_,
+                        particle_start,
+                        num_particles,
+                        source_term_ptr,
+                        source_term_offset_,
+                        stream);
+                }
+            }
+            #pragma acc wait(kSourceTermAsync)
+            return;
+        }
+    }
 #endif
     
     for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
@@ -835,9 +1080,6 @@ void SourceTermCompute::downward_pass()
             source_term_ptr[particle_start + i + source_term_offset_] += pot_temp_2;
         }
     } //end loop over nodes
-#ifdef OPENACC_ENABLED
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
-#endif
 
 //    timers_.downward_pass.stop();
 }
@@ -862,8 +1104,22 @@ void SourceTermCompute::copyin_clusters_to_device() const
     std::size_t p_dy_num = elem_interp_potential_dy_.size();
     std::size_t p_dz_num = elem_interp_potential_dz_.size();
     
+    const double* mol_weights_ptr = mol_weights_.data();
+    std::size_t mol_weights_num = mol_weights_.size();
+    const double* elem_weights_ptr = elem_weights_.data();
+    std::size_t elem_weights_num = elem_weights_.size();
+
+    int* exact_idx_x_ptr = const_cast<int*>(exact_idx_x_.data());
+    int* exact_idx_y_ptr = const_cast<int*>(exact_idx_y_.data());
+    int* exact_idx_z_ptr = const_cast<int*>(exact_idx_z_.data());
+    double* denominator_ptr = const_cast<double*>(denominator_.data());
+    std::size_t scratch_num = max_mol_particles_per_node_;
+
     #pragma acc enter data copyin(q_ptr[0:q_num], p_ptr[0:p_num], \
-                                  p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num])
+                                  p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num], \
+                                  mol_weights_ptr[0:mol_weights_num], elem_weights_ptr[0:elem_weights_num]) \
+                             create(exact_idx_x_ptr[0:scratch_num], exact_idx_y_ptr[0:scratch_num], \
+                                    exact_idx_z_ptr[0:scratch_num], denominator_ptr[0:scratch_num])
 #endif
 
 //    timers_.copyin_clusters_to_device.stop();
@@ -888,8 +1144,22 @@ void SourceTermCompute::delete_clusters_from_device() const
     std::size_t p_dy_num = elem_interp_potential_dy_.size();
     std::size_t p_dz_num = elem_interp_potential_dz_.size();
     
+    const double* mol_weights_ptr = mol_weights_.data();
+    std::size_t mol_weights_num = mol_weights_.size();
+    const double* elem_weights_ptr = elem_weights_.data();
+    std::size_t elem_weights_num = elem_weights_.size();
+
+    int* exact_idx_x_ptr = const_cast<int*>(exact_idx_x_.data());
+    int* exact_idx_y_ptr = const_cast<int*>(exact_idx_y_.data());
+    int* exact_idx_z_ptr = const_cast<int*>(exact_idx_z_.data());
+    double* denominator_ptr = const_cast<double*>(denominator_.data());
+    std::size_t scratch_num = max_mol_particles_per_node_;
+
     #pragma acc exit data delete(q_ptr[0:q_num], p_ptr[0:p_num], \
-                                 p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num])
+                                 p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num], \
+                                 mol_weights_ptr[0:mol_weights_num], elem_weights_ptr[0:elem_weights_num], \
+                                 exact_idx_x_ptr[0:scratch_num], exact_idx_y_ptr[0:scratch_num], \
+                                 exact_idx_z_ptr[0:scratch_num], denominator_ptr[0:scratch_num])
 #endif
 
 //    timers_.delete_clusters_from_device.stop();

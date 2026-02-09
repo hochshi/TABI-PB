@@ -39,6 +39,19 @@ private:
     std::size_t num_mol_charges_;
     
     std::vector<double> mol_interp_charge_;
+
+    /* Persistent weights + scratch */
+
+    std::size_t max_mol_particles_per_node_;
+
+    std::vector<double> mol_weights_;
+    std::vector<double> elem_weights_;
+
+    std::vector<int> exact_idx_x_;
+    std::vector<int> exact_idx_y_;
+    std::vector<int> exact_idx_z_;
+    std::vector<double> denominator_;
+
     
     
     /* Potentials */
