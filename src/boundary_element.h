@@ -1,6 +1,8 @@
 #ifndef H_TABIPB_TREECODE_STRUCT_H
 #define H_TABIPB_TREECODE_STRUCT_H
 
+#include <cstdint>
+
 #include "timer.h"
 #include "output.h"
 #include "elements.h"
@@ -47,6 +49,19 @@ private:
     std::vector<std::size_t> node_particles_begin_;
     std::vector<std::size_t> node_particles_end_;
     std::vector<std::size_t> element_node_idx_;
+
+    std::vector<std::uint32_t> node_particles_begin_u32_;
+    std::vector<std::uint32_t> node_particles_end_u32_;
+    std::vector<std::uint32_t> element_node_idx_u32_;
+
+    std::vector<std::uint32_t> pp_offsets_u32_;
+    std::vector<std::uint32_t> pp_sources_u32_;
+    std::vector<std::uint32_t> pc_offsets_u32_;
+    std::vector<std::uint32_t> pc_sources_u32_;
+    std::vector<std::uint32_t> cp_offsets_u32_;
+    std::vector<std::uint32_t> cp_sources_u32_;
+    std::vector<std::uint32_t> cc_offsets_u32_;
+    std::vector<std::uint32_t> cc_sources_u32_;
     
     /* output */
     double solvation_energy_;
