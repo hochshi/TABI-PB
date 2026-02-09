@@ -92,7 +92,8 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
 
 
 #ifdef OPENACC_ENABLED
-    #pragma acc parallel loop present(elem_x_ptr,    elem_y_ptr,    elem_z_ptr, \
+    int stream_id = std::rand() % 3;
+    #pragma acc parallel loop async(stream_id) present(elem_x_ptr,    elem_y_ptr,    elem_z_ptr, \
                                       elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
                                       mol_x_ptr,     mol_y_ptr,     mol_z_ptr,     mol_q_ptr, \
                                       source_term_ptr)
@@ -128,11 +129,11 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
             pot_temp_dz += Gn * mol_q_ptr[k] * dz;
         }
         
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         source_term_ptr[j]                       += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         source_term_ptr[j + source_term_offset_] += elem_q_dx_ptr[j] * pot_temp_dx
@@ -184,7 +185,8 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
     
     
 #ifdef OPENACC_ENABLED
-    #pragma acc parallel loop present(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+    int stream_id = std::rand() % 3;
+    #pragma acc parallel loop async(stream_id) present(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
                     elem_q_dx_ptr,      elem_q_dy_ptr,      elem_q_dz_ptr, \
                     mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
                     mol_clusters_q_ptr, source_term_ptr)
@@ -228,11 +230,15 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
         }
         }
         
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         source_term_ptr[j]                       += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         source_term_ptr[j + source_term_offset_] += elem_q_dx_ptr[j] * pot_temp_dx
@@ -280,7 +286,8 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
 
 
 #ifdef OPENACC_ENABLED
-    #pragma acc parallel loop collapse(3) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+    int stream_id = std::rand() % 3;
+    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
                     elem_clusters_x_ptr, elem_clusters_y_ptr,    elem_clusters_z_ptr, \
                     elem_clusters_p_ptr, elem_clusters_p_dx_ptr, elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
 #endif
@@ -321,19 +328,27 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
             pot_temp_dz += Gn * mol_q_ptr[k] * dz;
         }
     
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_ptr   [jj] += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dx_ptr[jj] += pot_temp_dx;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dy_ptr[jj] += pot_temp_dy;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dz_ptr[jj] += pot_temp_dz;
@@ -384,7 +399,8 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
 
 
 #ifdef OPENACC_ENABLED
-    #pragma acc parallel loop collapse(3) present(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+    int stream_id = std::rand() % 3;
+    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
                     mol_clusters_q_ptr,  elem_clusters_x_ptr,    elem_clusters_y_ptr,    elem_clusters_z_ptr, \
                     elem_clusters_p_ptr, elem_clusters_p_dx_ptr, elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
 #endif
@@ -433,19 +449,27 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
         }
         }
     
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_ptr   [jj] += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dx_ptr[jj] += pot_temp_dx;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dy_ptr[jj] += pot_temp_dy;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#ifdef OPENACC_ENABLED
+        #pragma acc atomic update
+#elif  OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dz_ptr[jj] += pot_temp_dz;
@@ -490,22 +514,6 @@ void SourceTermCompute::upward_pass()
 #ifdef OPENACC_ENABLED
     #pragma acc enter data copyin(weights_ptr[0:weights_num])
 #endif
-
-    std::size_t max_particles = molecule_.num();
-    std::vector<int> exact_idx_x(max_particles);
-    std::vector<int> exact_idx_y(max_particles);
-    std::vector<int> exact_idx_z(max_particles);
-    std::vector<double> denominator(max_particles);
-
-    int* exact_idx_x_ptr = exact_idx_x.data();
-    int* exact_idx_y_ptr = exact_idx_y.data();
-    int* exact_idx_z_ptr = exact_idx_z.data();
-    double* denominator_ptr = denominator.data();
-
-#ifdef OPENACC_ENABLED
-    #pragma acc enter data create(exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
-                                  exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
-#endif
     
     for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
         
@@ -517,12 +525,22 @@ void SourceTermCompute::upward_pass()
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
         
+        std::vector<int> exact_idx_x(num_particles);
+        std::vector<int> exact_idx_y(num_particles);
+        std::vector<int> exact_idx_z(num_particles);
+        std::vector<double> denominator(num_particles);
+        
+        int* exact_idx_x_ptr = exact_idx_x.data();
+        int* exact_idx_y_ptr = exact_idx_y.data();
+        int* exact_idx_z_ptr = exact_idx_z.data();
+        double* denominator_ptr = denominator.data();
+        
 #ifdef OPENACC_ENABLED
 #pragma acc kernels present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                            mol_clusters_q_ptr, weights_ptr, exact_idx_x_ptr[0:max_particles], \
-                            exact_idx_y_ptr[0:max_particles], exact_idx_z_ptr[0:max_particles], \
-                            denominator_ptr[0:max_particles])
+                            mol_clusters_q_ptr, weights_ptr) \
+                  create(exact_idx_x_ptr[0:num_particles], exact_idx_y_ptr[0:num_particles], \
+                         exact_idx_z_ptr[0:num_particles], denominator_ptr[0:num_particles])
 #endif
         {
 
@@ -647,8 +665,6 @@ void SourceTermCompute::upward_pass()
         } // end parallel region
     } // end loop over nodes
 #ifdef OPENACC_ENABLED
-    #pragma acc exit data delete(exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
-                                 exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
     #pragma acc exit data delete(weights_ptr[0:weights_num])
 #endif
 
@@ -809,12 +825,12 @@ void SourceTermCompute::downward_pass()
             double pot_temp_2 = elem_q_dx_ptr[particle_start + i] * pot_temp_dx
                               + elem_q_dy_ptr[particle_start + i] * pot_temp_dy
                               + elem_q_dz_ptr[particle_start + i] * pot_temp_dz;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
-            #pragma omp atomic update
+#ifdef OPENACC_ENABLED
+            #pragma acc atomic update
 #endif
             source_term_ptr[particle_start + i]                       += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
-            #pragma omp atomic update
+#ifdef OPENACC_ENABLED
+            #pragma acc atomic update
 #endif
             source_term_ptr[particle_start + i + source_term_offset_] += pot_temp_2;
         }

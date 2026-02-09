@@ -12,6 +12,16 @@ namespace {
 constexpr int kMaxInterpPts = 16;
 constexpr int kParticleTile = 128;
 constexpr int kMaxJPerThread = 16;
+constexpr int kSmallInterpPts = 4;
+
+__host__ __device__ inline int choose_threads_for_n3(int n3)
+{
+    int threads = 32;
+    while (threads < n3 && threads < 256) {
+        threads <<= 1;
+    }
+    return threads;
+}
 
 __global__ void upward_denom_kernel(
     int num_interp_pts_per_node,
@@ -372,6 +382,11 @@ __global__ void upward_fused_kernel(
     __shared__ int tile_ex[kParticleTile];
     __shared__ int tile_ey[kParticleTile];
     __shared__ int tile_ez[kParticleTile];
+    __shared__ double tile_x_term[kSmallInterpPts][kParticleTile];
+    __shared__ double tile_y_term[kSmallInterpPts][kParticleTile];
+    __shared__ double tile_z_term[kSmallInterpPts][kParticleTile];
+    const bool use_terms = (n <= kSmallInterpPts);
+
 
     std::size_t num_particles = particle_end - particle_start;
     for (std::size_t tile_start = 0; tile_start < num_particles; tile_start += kParticleTile) {
@@ -399,14 +414,28 @@ __global__ void upward_fused_kernel(
             int ey = -1;
             int ez = -1;
 
+            double x_term_local[kSmallInterpPts];
+            double y_term_local[kSmallInterpPts];
+            double z_term_local[kSmallInterpPts];
+
             for (int j = 0; j < n; ++j) {
                 double dist_x = px - node_x[j];
                 double dist_y = py - node_y[j];
                 double dist_z = pz - node_z[j];
 
-                denom_x += w_cache[j] / dist_x;
-                denom_y += w_cache[j] / dist_y;
-                denom_z += w_cache[j] / dist_z;
+                double inv_x = w_cache[j] / dist_x;
+                double inv_y = w_cache[j] / dist_y;
+                double inv_z = w_cache[j] / dist_z;
+
+                denom_x += inv_x;
+                denom_y += inv_y;
+                denom_z += inv_z;
+
+                if (use_terms) {
+                    x_term_local[j] = inv_x;
+                    y_term_local[j] = inv_y;
+                    z_term_local[j] = inv_z;
+                }
 
                 int cx = (fabs(dist_x) < DBL_MIN) ? j : -1;
                 int cy = (fabs(dist_y) < DBL_MIN) ? j : -1;
@@ -414,6 +443,29 @@ __global__ void upward_fused_kernel(
                 if (cx > ex) ex = cx;
                 if (cy > ey) ey = cy;
                 if (cz > ez) ez = cz;
+            }
+
+            if (use_terms) {
+                if (ex != -1) {
+                    for (int j = 0; j < n; ++j) {
+                        x_term_local[j] = (j == ex) ? 1.0 : 0.0;
+                    }
+                }
+                if (ey != -1) {
+                    for (int j = 0; j < n; ++j) {
+                        y_term_local[j] = (j == ey) ? 1.0 : 0.0;
+                    }
+                }
+                if (ez != -1) {
+                    for (int j = 0; j < n; ++j) {
+                        z_term_local[j] = (j == ez) ? 1.0 : 0.0;
+                    }
+                }
+                for (int j = 0; j < n; ++j) {
+                    tile_x_term[j][ii] = x_term_local[j];
+                    tile_y_term[j][ii] = y_term_local[j];
+                    tile_z_term[j][ii] = z_term_local[j];
+                }
             }
 
             double denom = 1.0;
@@ -440,27 +492,31 @@ __global__ void upward_fused_kernel(
             int k3 = k3_list[m];
 
             for (int ii = 0; ii < tile_count; ++ii) {
-                double dist_x = tile_x[ii] - cx;
-                double dist_y = tile_y[ii] - cy;
-                double dist_z = tile_z[ii] - cz;
-
                 double numerator = 1.0;
-                if (tile_ex[ii] == -1) {
-                    numerator *= w1 / dist_x;
+                if (use_terms) {
+                    numerator = tile_x_term[k1][ii] * tile_y_term[k2][ii] * tile_z_term[k3][ii];
                 } else {
-                    if (tile_ex[ii] != k1) numerator *= 0.0;
-                }
+                    double dist_x = tile_x[ii] - cx;
+                    double dist_y = tile_y[ii] - cy;
+                    double dist_z = tile_z[ii] - cz;
 
-                if (tile_ey[ii] == -1) {
-                    numerator *= w2 / dist_y;
-                } else {
-                    if (tile_ey[ii] != k2) numerator *= 0.0;
-                }
+                    if (tile_ex[ii] == -1) {
+                        numerator *= w1 / dist_x;
+                    } else {
+                        if (tile_ex[ii] != k1) numerator *= 0.0;
+                    }
 
-                if (tile_ez[ii] == -1) {
-                    numerator *= w3 / dist_z;
-                } else {
-                    if (tile_ez[ii] != k3) numerator *= 0.0;
+                    if (tile_ey[ii] == -1) {
+                        numerator *= w2 / dist_y;
+                    } else {
+                        if (tile_ey[ii] != k2) numerator *= 0.0;
+                    }
+
+                    if (tile_ez[ii] == -1) {
+                        numerator *= w3 / dist_z;
+                    } else {
+                        if (tile_ez[ii] != k3) numerator *= 0.0;
+                    }
                 }
 
                 double denom = tile_denom[ii];
@@ -564,7 +620,7 @@ extern "C" void upward_charge_cuda(
 
     int n = num_interp_pts_per_node;
     int n3 = n * n * n;
-    int threads = 256;
+    int threads = choose_threads_for_n3(n3);
     int blocks_y = (n3 + threads - 1) / threads;
     dim3 block(threads, 1, 1);
     dim3 grid(static_cast<unsigned int>(num_level_nodes),
@@ -620,7 +676,9 @@ extern "C" void upward_fused_cuda(
     if (num_interp_pts_per_node <= 0 || num_interp_pts_per_node > kMaxInterpPts) return;
     if (num_level_nodes == 0) return;
 
-    int threads = 256;
+    int n = num_interp_pts_per_node;
+    int n3 = n * n * n;
+    int threads = choose_threads_for_n3(n3);
     dim3 block(threads, 1, 1);
     dim3 grid(static_cast<unsigned int>(num_level_nodes), 1, 1);
 
