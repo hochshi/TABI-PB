@@ -45,6 +45,8 @@ private:
     std::vector<int> exact_idx_y_;
     std::vector<int> exact_idx_z_;
     std::vector<double> denominator_;
+    std::vector<std::size_t> level_offsets_;
+    std::vector<std::size_t> level_nodes_;
 
     std::vector<std::size_t> node_particles_begin_;
     std::vector<std::size_t> node_particles_end_;

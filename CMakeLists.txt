@@ -55,6 +55,16 @@ if (ENABLE_OPENACC)
     add_definitions(-DOPENACC_ENABLED)
 endif ()
 
+################################################################################
+# CUDA CC kernel
+################################################################################
+option(ENABLE_CUDA_CC "CUDA CC kernel" OFF)
+
+if (ENABLE_CUDA_CC)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+endif ()
+
 
 ################################################################################
 # OpenMP

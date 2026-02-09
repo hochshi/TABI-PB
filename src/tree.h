@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstddef>
+#include <vector>
 
 #include "timer.h"
 #include "particles.h"
@@ -56,6 +57,8 @@ public:
     ~Tree() = default;
     
     std::size_t num_nodes() const { return num_nodes_; };
+    std::size_t max_depth() const { return max_depth_; };
+    const std::vector<std::size_t>& node_levels() const { return node_level_; };
     const std::array<double, 12> node_particle_bounds(std::size_t node_idx) const;
     const std::array<std::size_t, 2> node_particle_idxs(std::size_t node_idx) const;
     const std::vector<std::size_t>& leaves() const { return leaves_; }

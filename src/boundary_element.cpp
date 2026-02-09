@@ -8,6 +8,17 @@
 
 #include "constants.h"
 #include "boundary_element.h"
+#ifdef USE_CUDA_CC
+#include <openacc.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include "cc_cuda.h"
+#include "up_cuda.h"
+
+extern "C" {
+    CUcontext acc_get_cuda_context(void) __attribute__((weak));
+}
+#endif
 
 
 BoundaryElement::BoundaryElement(class Elements& elements, const class InterpolationPoints& interp_pts,
@@ -57,6 +68,26 @@ BoundaryElement::BoundaryElement(class Elements& elements, const class Interpola
         auto idxs = tree_.node_particle_idxs(i);
         node_particles_begin_[i] = idxs[0];
         node_particles_end_[i] = idxs[1];
+    }
+
+    const auto& node_levels = tree_.node_levels();
+    std::size_t max_depth = tree_.max_depth();
+    level_offsets_.assign(max_depth + 1, 0);
+    for (std::size_t node_idx = 0; node_idx < num_nodes; ++node_idx) {
+        std::size_t lvl = node_levels[node_idx];
+        if (lvl + 1 >= level_offsets_.size()) {
+            level_offsets_.resize(lvl + 2, 0);
+        }
+        level_offsets_[lvl + 1]++;
+    }
+    for (std::size_t lvl = 1; lvl < level_offsets_.size(); ++lvl) {
+        level_offsets_[lvl] += level_offsets_[lvl - 1];
+    }
+    level_nodes_.resize(num_nodes);
+    std::vector<std::size_t> level_cursor = level_offsets_;
+    for (std::size_t node_idx = 0; node_idx < num_nodes; ++node_idx) {
+        std::size_t lvl = node_levels[node_idx];
+        level_nodes_[level_cursor[lvl]++] = node_idx;
     }
 
     element_node_idx_.resize(elements_.num());
@@ -1620,6 +1651,106 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
     if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
         int n  = num_interp_pts_per_node;
         int n2 = n * n;
+        int n3 = n2 * n;
+
+#ifdef USE_CUDA_CC
+        bool present_ok = true;
+        std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
+        std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node) * num_nodes;
+        std::size_t num_elements = elements_.num();
+        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)cp_offsets_ptr, cp_offsets_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)cp_sources_ptr, cp_sources_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)cc_offsets_ptr, cc_offsets_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)cc_sources_ptr, cc_sources_num * sizeof(std::uint32_t));
+
+        if (present_ok) {
+            int acc_dev = acc_get_device_num(acc_device_nvidia);
+            (void)acc_dev;
+            acc_wait(acc_async_sync);
+            static bool cu_inited = false;
+            if (!cu_inited) {
+                cuInit(0);
+                cu_inited = true;
+            }
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                             clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
+                                             node_begin_ptr, node_end_ptr, \
+                                             cp_offsets_ptr, cp_sources_ptr, cc_offsets_ptr, cc_sources_ptr, \
+                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                             sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                timers_.cluster_cluster_interact.stop();
+                timers_.cluster_particle_interact.start();
+                cp_interact_cuda(n, n2, n3, num_interp_pts_per_node, num_charges_per_node,
+                                 eps, kappa, kappa2,
+                                 clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
+                                 clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
+                                 node_begin_ptr, node_end_ptr,
+                                 cp_offsets_ptr, cp_sources_ptr,
+                                 elements_x_ptr, elements_y_ptr, elements_z_ptr,
+                                 sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr,
+                                 num_elements,
+                                 num_nodes,
+                                 cp_offsets_num,
+                                 cp_sources_num,
+                                 stream);
+                timers_.cluster_particle_interact.stop();
+                timers_.cluster_cluster_interact.start();
+                cc_interact_cuda(n, n2, n3, num_interp_pts_per_node, num_charges_per_node,
+                                 eps, kappa, kappa2,
+                                 clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
+                                 clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr,
+                                 clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
+                                 node_begin_ptr, node_end_ptr,
+                                 cp_offsets_ptr, cp_sources_ptr,
+                                 cc_offsets_ptr, cc_sources_ptr,
+                                 elements_x_ptr, elements_y_ptr, elements_z_ptr,
+                                 sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr,
+                                 num_elements,
+                                 num_nodes,
+                                 cp_offsets_num,
+                                 cp_sources_num,
+                                 cc_offsets_num,
+                                 cc_sources_num,
+                                 0,
+                                 stream);
+            }
+            timers_.cluster_cluster_interact.stop();
+            return;
+        }
+#endif
 
         #pragma acc parallel loop gang vector_length(32) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
                                                clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
@@ -1795,7 +1926,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
 
             for (int t1 = 0; t1 < n; t1 += kTargetTile) {
                 int t1_max = (t1 + kTargetTile < n) ? (t1 + kTargetTile) : n;
-                int tn1 = t1_max - t1;
                 for (int t2 = 0; t2 < n; t2 += kTargetTile) {
                     int t2_max = (t2 + kTargetTile < n) ? (t2 + kTargetTile) : n;
                     int tn2 = t2_max - t2;
@@ -2249,6 +2379,8 @@ void BoundaryElement::upward_pass()
 {
     timers_.upward_pass.start();
 
+    constexpr int kMaxInterpPts = 16;
+
     const double* __restrict clusters_x_ptr   = interp_pts_.interp_x_ptr();
     const double* __restrict clusters_y_ptr   = interp_pts_.interp_y_ptr();
     const double* __restrict clusters_z_ptr   = interp_pts_.interp_z_ptr();
@@ -2275,156 +2407,313 @@ void BoundaryElement::upward_pass()
     int* exact_idx_y_ptr = exact_idx_y_.data();
     int* exact_idx_z_ptr = exact_idx_z_.data();
     double* denominator_ptr = denominator_.data();
-    
-    for (std::size_t node_idx = 0; node_idx < tree_.num_nodes(); ++node_idx) {
-        
-        auto particle_idxs = tree_.node_particle_idxs(node_idx);
-        
-        std::size_t node_interp_pts_start = node_idx * interp_pts_.num_interp_pts_per_node();
-        std::size_t node_charges_start    = node_idx * num_charges_per_node_;
-        
-        std::size_t particle_start = particle_idxs[0];
-        std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
-        
-#ifdef OPENACC_ENABLED
-    #pragma acc kernels present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                         sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
-                         clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                         clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                         weights_ptr, exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
-                         exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
-#endif
-        {
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop vector(32) independent
+    const std::uint32_t* __restrict node_begin_ptr = node_particles_begin_u32_.data();
+    const std::uint32_t* __restrict node_end_ptr   = node_particles_end_u32_.data();
+    std::size_t num_nodes = node_particles_begin_u32_.size();
+
+    const std::size_t* __restrict level_offsets_ptr = level_offsets_.data();
+    const std::size_t* __restrict level_nodes_ptr = level_nodes_.data();
+    std::size_t level_count = level_offsets_.empty() ? 0 : (level_offsets_.size() - 1);
+    std::size_t level_nodes_num = level_nodes_.size();
+#ifndef OPENACC_ENABLED
+    (void)num_nodes;
+    (void)level_nodes_num;
 #endif
-        for (std::size_t i = 0; i < num_particles; ++i) {
-            exact_idx_x_ptr[i] = -1;
-            exact_idx_y_ptr[i] = -1;
-            exact_idx_z_ptr[i] = -1;
+
+#if defined(USE_CUDA_CC) && defined(OPENACC_ENABLED)
+    if (num_interp_pts_per_node <= kMaxInterpPts) {
+        bool present_ok = true;
+        std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
+        std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node_) * num_nodes;
+        std::size_t num_elements = elements_.num();
+
+        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)weights_ptr, static_cast<std::size_t>(num_interp_pts_per_node) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)sources_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)level_nodes_ptr, level_nodes_num * sizeof(std::size_t));
+        present_ok = present_ok && acc_is_present((void*)exact_idx_x_ptr, max_particles * sizeof(int));
+        present_ok = present_ok && acc_is_present((void*)exact_idx_y_ptr, max_particles * sizeof(int));
+        present_ok = present_ok && acc_is_present((void*)exact_idx_z_ptr, max_particles * sizeof(int));
+        present_ok = present_ok && acc_is_present((void*)denominator_ptr, max_particles * sizeof(double));
+
+        if (present_ok) {
+            int acc_dev = acc_get_device_num(acc_device_nvidia);
+            (void)acc_dev;
+            acc_wait(acc_async_sync);
+            static bool cu_inited = false;
+            if (!cu_inited) {
+                cuInit(0);
+                cu_inited = true;
+            }
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                             weights_ptr, elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                             sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
+                                             node_begin_ptr, node_end_ptr, level_nodes_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+
+                if (level_nodes_num > 0) {
+                    upward_fused_cuda(num_interp_pts_per_node, num_charges_per_node_,
+                                      clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
+                                      weights_ptr,
+                                      elements_x_ptr, elements_y_ptr, elements_z_ptr,
+                                      sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr,
+                                      node_begin_ptr, node_end_ptr,
+                                      level_nodes_ptr,
+                                      level_nodes_num,
+                                      clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr,
+                                      stream);
+                }
+            }
+            timers_.upward_pass.stop();
+            return;
         }
-
-#ifdef OPENACC_ENABLED
-        #pragma acc loop independent
+    }
 #endif
-        for (std::size_t i = 0; i < num_particles; ++i) {
-        
-            double denominator_x = 0.;
-            double denominator_y = 0.;
-            double denominator_z = 0.;
-            int ex = -1, ey = -1, ez = -1;
-            
-            double xx    = elements_x_ptr[particle_start + i];
-            double yy    = elements_y_ptr[particle_start + i];
-            double zz    = elements_z_ptr[particle_start + i];
 
-            // because there's a reduction over exact_idx[i], this loop carries a
-            // backward dependence and won't actually parallelize
+    for (std::size_t level = 0; level < level_count; ++level) {
+        std::size_t level_begin = level_offsets_ptr[level];
+        std::size_t level_end   = level_offsets_ptr[level + 1];
 #ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:denominator_x,denominator_y,denominator_z) reduction(max:ex,ey,ez)
+        #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                               sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
+                                               clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                               clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                               weights_ptr, exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
+                                               exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles], \
+                                               node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
+                                               level_offsets_ptr[0:level_count+1], level_nodes_ptr[0:level_nodes_num])
 #endif
-            for (int j = 0; j < num_interp_pts_per_node; ++j) {
-            
-                double dist_x = xx - clusters_x_ptr[node_interp_pts_start + j];
-                double dist_y = yy - clusters_y_ptr[node_interp_pts_start + j];
-                double dist_z = zz - clusters_z_ptr[node_interp_pts_start + j];
-                
-                denominator_x += weights_ptr[j] / dist_x;
-                denominator_y += weights_ptr[j] / dist_y;
-                denominator_z += weights_ptr[j] / dist_z;
-                
-                const int cx = (std::abs(dist_x) < std::numeric_limits<double>::min()) ? j : -1;
-                const int cy = (std::abs(dist_y) < std::numeric_limits<double>::min()) ? j : -1;
-                const int cz = (std::abs(dist_z) < std::numeric_limits<double>::min()) ? j : -1;
+        for (std::size_t level_idx = level_begin; level_idx < level_end; ++level_idx) {
+            std::size_t node_idx = level_nodes_ptr[level_idx];
 
-                ex = (ex > cx) ? ex : cx;
-                ey = (ey > cy) ? ey : cy;
-                ez = (ez > cz) ? ez : cz;
+            std::size_t node_interp_pts_start =
+                node_idx * static_cast<std::size_t>(num_interp_pts_per_node);
+            std::size_t node_charges_start =
+                node_idx * static_cast<std::size_t>(num_charges_per_node_);
+
+            std::size_t particle_start = static_cast<std::size_t>(node_begin_ptr[node_idx]);
+            std::size_t particle_end   = static_cast<std::size_t>(node_end_ptr[node_idx]);
+            std::size_t num_particles  = particle_end - particle_start;
+
+            const double* __restrict node_x_ptr = clusters_x_ptr + node_interp_pts_start;
+            const double* __restrict node_y_ptr = clusters_y_ptr + node_interp_pts_start;
+            const double* __restrict node_z_ptr = clusters_z_ptr + node_interp_pts_start;
+            const double* __restrict weights = weights_ptr;
+
+            double node_x_cache[kMaxInterpPts];
+            double node_y_cache[kMaxInterpPts];
+            double node_z_cache[kMaxInterpPts];
+            double w_cache[kMaxInterpPts];
+            if (num_interp_pts_per_node <= kMaxInterpPts) {
+#ifdef OPENACC_ENABLED
+                #pragma acc loop vector
+#endif
+                for (int j = 0; j < num_interp_pts_per_node; ++j) {
+                    node_x_cache[j] = node_x_ptr[j];
+                    node_y_cache[j] = node_y_ptr[j];
+                    node_z_cache[j] = node_z_ptr[j];
+                    w_cache[j] = weights_ptr[j];
+                }
+                node_x_ptr = node_x_cache;
+                node_y_ptr = node_y_cache;
+                node_z_ptr = node_z_cache;
+                weights = w_cache;
             }
 
-            exact_idx_x_ptr[i] = ex;
-            exact_idx_y_ptr[i] = ey;
-            exact_idx_z_ptr[i] = ez;
-            
-            denominator_ptr[i] = 1.0;
-            if (exact_idx_x_ptr[i] == -1) denominator_ptr[i] /= denominator_x;
-            if (exact_idx_y_ptr[i] == -1) denominator_ptr[i] /= denominator_y;
-            if (exact_idx_z_ptr[i] == -1) denominator_ptr[i] /= denominator_z;
-        }
+            const double* __restrict elements_x = elements_x_ptr + particle_start;
+            const double* __restrict elements_y = elements_y_ptr + particle_start;
+            const double* __restrict elements_z = elements_z_ptr + particle_start;
+
+            const double* __restrict sources_q    = sources_q_ptr    + particle_start;
+            const double* __restrict sources_q_dx = sources_q_dx_ptr + particle_start;
+            const double* __restrict sources_q_dy = sources_q_dy_ptr + particle_start;
+            const double* __restrict sources_q_dz = sources_q_dz_ptr + particle_start;
+
+            int* __restrict exact_x = exact_idx_x_ptr + particle_start;
+            int* __restrict exact_y = exact_idx_y_ptr + particle_start;
+            int* __restrict exact_z = exact_idx_z_ptr + particle_start;
+            double* __restrict denom_ptr = denominator_ptr + particle_start;
 
 #ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) independent
+            #pragma acc loop vector
 #endif
-        for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
-        for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
-        for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
-        
-            std::size_t kk = node_charges_start
-                   + k1 * num_interp_pts_per_node * num_interp_pts_per_node
-                   + k2 * num_interp_pts_per_node + k3;
-                   
-            double cx = clusters_x_ptr[node_interp_pts_start + k1];
-            double w1 = weights_ptr[k1];
+            for (std::size_t i = 0; i < num_particles; ++i) {
+                double denominator_x = 0.;
+                double denominator_y = 0.;
+                double denominator_z = 0.;
+                int ex = -1, ey = -1, ez = -1;
 
-            double cy = clusters_y_ptr[node_interp_pts_start + k2];
-            double w2 = weights_ptr[k2];
-            
-            double cz = clusters_z_ptr[node_interp_pts_start + k3];
-            double w3 = weights_ptr[k3];
-            
-            double q_temp    = 0.;
-            double q_dx_temp = 0.;
-            double q_dy_temp = 0.;
-            double q_dz_temp = 0.;
-            
+                double xx = elements_x[i];
+                double yy = elements_y[i];
+                double zz = elements_z[i];
+
+                // because there's a reduction over exact_idx[i], this loop carries a
+                // backward dependence and won't actually parallelize
 #ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:q_temp,q_dx_temp,q_dy_temp,q_dz_temp)
+                #pragma acc loop reduction(+:denominator_x,denominator_y,denominator_z) reduction(max:ex,ey,ez)
 #endif
-            for (std::size_t i = 0; i < num_particles; i++) {  // loop over source points
-            
-                double dist_x = elements_x_ptr[particle_start + i] - cx;
-                double dist_y = elements_y_ptr[particle_start + i] - cy;
-                double dist_z = elements_z_ptr[particle_start + i] - cz;
-                
-                double numerator = 1.;
+                for (int j = 0; j < num_interp_pts_per_node; ++j) {
+                    double dist_x = xx - node_x_ptr[j];
+                    double dist_y = yy - node_y_ptr[j];
+                    double dist_z = zz - node_z_ptr[j];
 
-                // If exact_idx[i] == -1, then no issues.
-                // If exact_idx[i] != -1, then we want to zero out terms EXCEPT when exactInd=k1.
-                if (exact_idx_x_ptr[i] == -1) {
-                    numerator *= w1 / dist_x;
-                } else {
-                    if (exact_idx_x_ptr[i] != k1) numerator *= 0.;
+                    denominator_x += weights[j] / dist_x;
+                    denominator_y += weights[j] / dist_y;
+                    denominator_z += weights[j] / dist_z;
+
+                    const int cx = (std::abs(dist_x) < std::numeric_limits<double>::min()) ? j : -1;
+                    const int cy = (std::abs(dist_y) < std::numeric_limits<double>::min()) ? j : -1;
+                    const int cz = (std::abs(dist_z) < std::numeric_limits<double>::min()) ? j : -1;
+
+                    ex = (ex > cx) ? ex : cx;
+                    ey = (ey > cy) ? ey : cy;
+                    ez = (ez > cz) ? ez : cz;
                 }
 
-                if (exact_idx_y_ptr[i] == -1) {
-                    numerator *= w2 / dist_y;
-                } else {
-                    if (exact_idx_y_ptr[i] != k2) numerator *= 0.;
-                }
+                exact_x[i] = ex;
+                exact_y[i] = ey;
+                exact_z[i] = ez;
 
-                if (exact_idx_z_ptr[i] == -1) {
-                    numerator *= w3 / dist_z;
-                } else {
-                    if (exact_idx_z_ptr[i] != k3) numerator *= 0.;
-                }
-
-                q_temp    += sources_q_ptr   [particle_start + i] * numerator * denominator_ptr[i];
-                q_dx_temp += sources_q_dx_ptr[particle_start + i] * numerator * denominator_ptr[i];
-                q_dy_temp += sources_q_dy_ptr[particle_start + i] * numerator * denominator_ptr[i];
-                q_dz_temp += sources_q_dz_ptr[particle_start + i] * numerator * denominator_ptr[i];
+                double denom = 1.0;
+                if (ex == -1) denom /= denominator_x;
+                if (ey == -1) denom /= denominator_y;
+                if (ez == -1) denom /= denominator_z;
+                denom_ptr[i] = denom;
             }
-            
-            clusters_q_ptr   [kk] += q_temp;
-            clusters_q_dx_ptr[kk] += q_dx_temp;
-            clusters_q_dy_ptr[kk] += q_dy_temp;
-            clusters_q_dz_ptr[kk] += q_dz_temp;
+
+            constexpr int kParticleTile = 128;
+            double tile_x[kParticleTile];
+            double tile_y[kParticleTile];
+            double tile_z[kParticleTile];
+            double tile_q[kParticleTile];
+            double tile_q_dx[kParticleTile];
+            double tile_q_dy[kParticleTile];
+            double tile_q_dz[kParticleTile];
+            double tile_denom[kParticleTile];
+            int tile_ex[kParticleTile];
+            int tile_ey[kParticleTile];
+            int tile_ez[kParticleTile];
+
+            for (std::size_t tile_start = 0; tile_start < num_particles; tile_start += kParticleTile) {
+                int tile_count = static_cast<int>(num_particles - tile_start);
+                if (tile_count > kParticleTile) tile_count = kParticleTile;
+
+#ifdef OPENACC_ENABLED
+                #pragma acc loop vector
+#endif
+                for (int ii = 0; ii < tile_count; ++ii) {
+                    std::size_t pidx = tile_start + static_cast<std::size_t>(ii);
+                    tile_x[ii] = elements_x[pidx];
+                    tile_y[ii] = elements_y[pidx];
+                    tile_z[ii] = elements_z[pidx];
+                    tile_q[ii] = sources_q[pidx];
+                    tile_q_dx[ii] = sources_q_dx[pidx];
+                    tile_q_dy[ii] = sources_q_dy[pidx];
+                    tile_q_dz[ii] = sources_q_dz[pidx];
+                    tile_denom[ii] = denom_ptr[pidx];
+                    tile_ex[ii] = exact_x[pidx];
+                    tile_ey[ii] = exact_y[pidx];
+                    tile_ez[ii] = exact_z[pidx];
+                }
+
+#ifdef OPENACC_ENABLED
+                #pragma acc loop collapse(3) vector
+#endif
+                for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
+                for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
+                for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
+                    std::size_t kk = node_charges_start
+                           + static_cast<std::size_t>(k1 * num_interp_pts_per_node * num_interp_pts_per_node)
+                           + static_cast<std::size_t>(k2 * num_interp_pts_per_node + k3);
+
+                    double cx = node_x_ptr[k1];
+                    double w1 = weights[k1];
+
+                    double cy = node_y_ptr[k2];
+                    double w2 = weights[k2];
+
+                    double cz = node_z_ptr[k3];
+                    double w3 = weights[k3];
+
+                    double q_temp    = 0.;
+                    double q_dx_temp = 0.;
+                    double q_dy_temp = 0.;
+                    double q_dz_temp = 0.;
+
+#ifdef OPENACC_ENABLED
+                    #pragma acc loop seq
+#endif
+                    for (int ii = 0; ii < tile_count; ++ii) {
+                        double dist_x = tile_x[ii] - cx;
+                        double dist_y = tile_y[ii] - cy;
+                        double dist_z = tile_z[ii] - cz;
+
+                        double numerator = 1.;
+
+                        // If exact_idx[i] == -1, then no issues.
+                        // If exact_idx[i] != -1, then we want to zero out terms EXCEPT when exactInd=k1.
+                        if (tile_ex[ii] == -1) {
+                            numerator *= w1 / dist_x;
+                        } else {
+                            if (tile_ex[ii] != k1) numerator *= 0.;
+                        }
+
+                        if (tile_ey[ii] == -1) {
+                            numerator *= w2 / dist_y;
+                        } else {
+                            if (tile_ey[ii] != k2) numerator *= 0.;
+                        }
+
+                        if (tile_ez[ii] == -1) {
+                            numerator *= w3 / dist_z;
+                        } else {
+                            if (tile_ez[ii] != k3) numerator *= 0.;
+                        }
+
+                        double denom = tile_denom[ii];
+                        q_temp    += tile_q[ii]    * numerator * denom;
+                        q_dx_temp += tile_q_dx[ii] * numerator * denom;
+                        q_dy_temp += tile_q_dy[ii] * numerator * denom;
+                        q_dz_temp += tile_q_dz[ii] * numerator * denom;
+                    }
+
+                    clusters_q_ptr   [kk] += q_temp;
+                    clusters_q_dx_ptr[kk] += q_dx_temp;
+                    clusters_q_dy_ptr[kk] += q_dy_temp;
+                    clusters_q_dz_ptr[kk] += q_dz_temp;
+                }
+                }
+                }
+            }
         }
-        }
-        }
-        
-        } // end parallel region
-    } // end loop over nodes
+    }
     timers_.upward_pass.stop();
 }
 
@@ -2687,6 +2976,11 @@ void BoundaryElement::copyin_clusters_to_device() const
     const std::uint32_t* element_node_idx_ptr = element_node_idx_u32_.data();
     std::size_t element_node_count = element_node_idx_u32_.size();
 
+    const std::size_t* level_offsets_ptr = level_offsets_.data();
+    const std::size_t* level_nodes_ptr = level_nodes_.data();
+    std::size_t level_offsets_num = level_offsets_.size();
+    std::size_t level_nodes_num = level_nodes_.size();
+
     const std::uint32_t* pp_offsets_ptr = pp_offsets_u32_.data();
     const std::uint32_t* pc_offsets_ptr = pc_offsets_u32_.data();
     const std::uint32_t* cp_offsets_ptr = cp_offsets_u32_.data();
@@ -2714,6 +3008,8 @@ void BoundaryElement::copyin_clusters_to_device() const
                                   exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
     #pragma acc enter data copyin(node_begin_ptr[0:node_count], node_end_ptr[0:node_count])
     #pragma acc enter data copyin(element_node_idx_ptr[0:element_node_count])
+    #pragma acc enter data copyin(level_offsets_ptr[0:level_offsets_num], \
+                                  level_nodes_ptr[0:level_nodes_num])
     #pragma acc enter data copyin( \
                 pp_offsets_ptr[0:pp_offsets_num], pc_offsets_ptr[0:pc_offsets_num], \
                 cp_offsets_ptr[0:cp_offsets_num], cc_offsets_ptr[0:cc_offsets_num], \
@@ -2769,6 +3065,11 @@ void BoundaryElement::delete_clusters_from_device() const
     const std::uint32_t* element_node_idx_ptr = element_node_idx_u32_.data();
     std::size_t element_node_count = element_node_idx_u32_.size();
 
+    const std::size_t* level_offsets_ptr = level_offsets_.data();
+    const std::size_t* level_nodes_ptr = level_nodes_.data();
+    std::size_t level_offsets_num = level_offsets_.size();
+    std::size_t level_nodes_num = level_nodes_.size();
+
     const std::uint32_t* pp_offsets_ptr = pp_offsets_u32_.data();
     const std::uint32_t* pc_offsets_ptr = pc_offsets_u32_.data();
     const std::uint32_t* cp_offsets_ptr = cp_offsets_u32_.data();
@@ -2796,6 +3097,8 @@ void BoundaryElement::delete_clusters_from_device() const
                                  exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
     #pragma acc exit data delete(node_begin_ptr[0:node_count], node_end_ptr[0:node_count])
     #pragma acc exit data delete(element_node_idx_ptr[0:element_node_count])
+    #pragma acc exit data delete(level_offsets_ptr[0:level_offsets_num], \
+                                 level_nodes_ptr[0:level_nodes_num])
     #pragma acc exit data delete( \
                 pp_offsets_ptr[0:pp_offsets_num], pc_offsets_ptr[0:pc_offsets_num], \
                 cp_offsets_ptr[0:cp_offsets_num], cc_offsets_ptr[0:cc_offsets_num], \
