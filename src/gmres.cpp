@@ -1,8 +1,19 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <cstring>
 
 #include "boundary_element.h"
+
+#ifdef USE_CUDA_CC
+#include <openacc.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include "gmres_cuda.h"
+extern "C" {
+    CUcontext acc_get_cuda_context(void) __attribute__((weak));
+}
+#endif
 
 /*  -- Iterative template routine --
 *     Univ. of Tennessee and Oak Ridge National Laboratory
@@ -105,6 +116,52 @@ static void update_(long int i, long int n, double* x, const double* h, long int
                     double* y, const double* s, const double* v, long int ldv);
 static void basis_(long int i, long int n, double* h, double* v, long int ldv, double* w);
 
+#ifdef USE_CUDA_CC
+static void basis_cuda_(long int i, long int n, double* h,
+                        double* v_dev, long int ldv,
+                        double* w_dev,
+                        double* partials_dev, std::size_t partials_len,
+                        void* stream)
+{
+    for (long int k = 0; k < i; ++k) {
+        h[k] = gmres_cuda_ddot(w_dev, v_dev + k * ldv,
+                               static_cast<std::size_t>(n),
+                               partials_dev, partials_len, stream);
+        gmres_cuda_daxpy(w_dev, v_dev + k * ldv, -h[k],
+                         static_cast<std::size_t>(n), stream);
+    }
+    h[i] = gmres_cuda_dnrm2(w_dev, static_cast<std::size_t>(n),
+                            partials_dev, partials_len, stream);
+    gmres_cuda_copy(v_dev + i * ldv, w_dev, static_cast<std::size_t>(n), stream);
+    gmres_cuda_dscal(v_dev + i * ldv, 1. / h[i], static_cast<std::size_t>(n), stream);
+}
+
+static void update_cuda_(long int i, long int n, double* x,
+                         const double* h, long int ldh,
+                         const double* s,
+                         double* v_dev, long int ldv,
+                         double* work_dev, long int ldw,
+                         double* x_dev, double* h_dev,
+                         void* stream)
+{
+    if (i <= 0) return;
+    auto cuda_stream = reinterpret_cast<cudaStream_t>(stream);
+    cudaMemcpyAsync(work_dev + ldw, s, static_cast<std::size_t>(i) * sizeof(double),
+                    cudaMemcpyHostToDevice, cuda_stream);
+    cudaMemcpyAsync(h_dev, h,
+                    static_cast<std::size_t>(ldh) * static_cast<std::size_t>(i) * sizeof(double),
+                    cudaMemcpyHostToDevice, cuda_stream);
+    gmres_cuda_dtrsv_upper(h_dev, static_cast<std::size_t>(ldh),
+                           work_dev + ldw, static_cast<std::size_t>(i), stream);
+    gmres_cuda_dgemv(v_dev, static_cast<std::size_t>(ldv),
+                     work_dev + ldw, x_dev,
+                     static_cast<std::size_t>(n), static_cast<std::size_t>(i), stream);
+    cudaMemcpyAsync(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
+                    cudaMemcpyDeviceToHost, cuda_stream);
+    cudaStreamSynchronize(cuda_stream);
+}
+#endif
+
 //*****************************************************************
 int BoundaryElement::gmres_(long int n, const double *b, double *x, long int restrt,
                      double* work, long int ldw, double* h, long int ldh,
@@ -116,19 +173,196 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
 /*     Store the Givens parameters in matrix H. */
 /*     Set initial residual (AV is temporary workspace here). */
 
+#ifdef USE_CUDA_CC
+    double* work_dev = nullptr;
+    double* partials_dev = nullptr;
+    std::size_t partials_len = 0;
+    double* x_dev = nullptr;
+    double* h_dev = nullptr;
+    bool mapped_work = false;
+    std::size_t mapped_work_segments = 0;
+    bool mapped_x = false;
+    void* cuda_stream = nullptr;
+    bool use_cuda_gmres = false;
+    const char* gmres_env = std::getenv("TABIPB_CUDA_GMRES");
+    const char* require_env = std::getenv("TABIPB_CUDA_REQUIRE_GMRES");
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_gmres = (require_all_env && std::strcmp(require_all_env, "0") != 0) ||
+                               (require_env && std::strcmp(require_env, "0") != 0);
+    const char* verbose_env = std::getenv("TABIPB_CUDA_GMRES_VERBOSE");
+    const bool verbose_gmres = require_gmres || (verbose_env && std::strcmp(verbose_env, "0") != 0);
+    use_cuda_gmres = require_gmres || (gmres_env && std::strcmp(gmres_env, "0") != 0);
+    const char* debug_map_env = std::getenv("TABIPB_CUDA_GMRES_DEBUG_MAP");
+    const bool debug_map = debug_map_env && std::strcmp(debug_map_env, "0") != 0;
+    if (use_cuda_gmres) {
+        static bool cu_inited = false;
+        if (!cu_inited) {
+            cuInit(0);
+            cu_inited = true;
+        }
+        acc_wait(acc_async_sync);
+        cuda_stream = acc_get_cuda_stream(acc_async_sync);
+        CUcontext acc_ctx = nullptr;
+        if (acc_get_cuda_context) {
+            acc_ctx = acc_get_cuda_context();
+        }
+        if (acc_ctx == nullptr) {
+            cuCtxGetCurrent(&acc_ctx);
+        }
+        if (acc_ctx != nullptr) {
+            cuCtxSetCurrent(acc_ctx);
+        }
+
+        const std::size_t work_len = static_cast<std::size_t>(ldw) * static_cast<std::size_t>(restrt + 4);
+        cudaError_t err = cudaMalloc(&work_dev, work_len * sizeof(double));
+        if (err != cudaSuccess) {
+            if (require_gmres) {
+                std::cerr << "[CUDA_GMRES] cudaMalloc(work) failed: "
+                          << cudaGetErrorString(err) << "\n";
+                std::exit(1);
+            }
+            use_cuda_gmres = false;
+        } else {
+            constexpr std::size_t kBlock = 256;
+            partials_len = (static_cast<std::size_t>(n) + kBlock - 1) / kBlock;
+            err = cudaMalloc(&partials_dev, partials_len * sizeof(double));
+            if (err != cudaSuccess) {
+                if (require_gmres) {
+                    std::cerr << "[CUDA_GMRES] cudaMalloc(partials) failed: "
+                              << cudaGetErrorString(err) << "\n";
+                    std::exit(1);
+                }
+                cudaFree(work_dev);
+                work_dev = nullptr;
+                use_cuda_gmres = false;
+            }
+            if (use_cuda_gmres) {
+                err = cudaMalloc(&x_dev, static_cast<std::size_t>(n) * sizeof(double));
+                if (err != cudaSuccess) {
+                    if (require_gmres) {
+                        std::cerr << "[CUDA_GMRES] cudaMalloc(x) failed: "
+                                  << cudaGetErrorString(err) << "\n";
+                        std::exit(1);
+                    }
+                    cudaFree(partials_dev);
+                    cudaFree(work_dev);
+                    partials_dev = nullptr;
+                    work_dev = nullptr;
+                    use_cuda_gmres = false;
+                } else {
+                    cudaMemcpyAsync(x_dev, x, static_cast<std::size_t>(n) * sizeof(double),
+                                    cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+                    const std::size_t h_cols = static_cast<std::size_t>(restrt + 2);
+                    const std::size_t h_bytes = static_cast<std::size_t>(ldh) * h_cols * sizeof(double);
+                    err = cudaMalloc(&h_dev, h_bytes);
+                    if (err != cudaSuccess) {
+                        if (require_gmres) {
+                            std::cerr << "[CUDA_GMRES] cudaMalloc(h) failed: "
+                                      << cudaGetErrorString(err) << "\n";
+                            std::exit(1);
+                        }
+                        cudaFree(x_dev);
+                        cudaFree(partials_dev);
+                        cudaFree(work_dev);
+                        x_dev = nullptr;
+                        partials_dev = nullptr;
+                        work_dev = nullptr;
+                        use_cuda_gmres = false;
+                    }
+                }
+            }
+            if (use_cuda_gmres) {
+                for (long int k = 0; k < restrt + 4; ++k) {
+                    double* seg = work + k * ldw;
+                    acc_map_data(seg,
+                                 work_dev + static_cast<std::size_t>(k) * static_cast<std::size_t>(ldw),
+                                 static_cast<std::size_t>(n) * sizeof(double));
+                    ++mapped_work_segments;
+                }
+                mapped_work = mapped_work_segments > 0;
+                acc_map_data(x, x_dev, static_cast<std::size_t>(n) * sizeof(double));
+                mapped_x = true;
+                if (verbose_gmres) {
+                    static bool step2_logged = false;
+                    if (!step2_logged) {
+                        std::cerr << "[CUDA_GMRES] Step 2 complete: Krylov vectors mapped on device across iterations.\n";
+                        step2_logged = true;
+                    }
+                }
+            }
+        }
+    }
+#else
+    const bool use_cuda_gmres = false;
+#endif
+
     for (long int idx = 0; idx < n; ++idx) work[2 * ldw + idx] = b[idx];
+#ifdef USE_CUDA_CC
+    if (use_cuda_gmres) {
+        cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw, static_cast<std::size_t>(n) * sizeof(double),
+                        cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+    }
+#endif
 
     if (dnrm2_(n, x) != 0.) {
         for (long int idx = 0; idx < n; ++idx) work[2 * ldw + idx] = b[idx];
-        BoundaryElement::matrix_vector(-1., x, 1., &work[2 * ldw]);
+#ifdef USE_CUDA_CC
+        if (use_cuda_gmres) {
+            cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw,
+                            static_cast<std::size_t>(n) * sizeof(double),
+                            cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+            BoundaryElement::matrix_vector(-1., x, 1., &work[2 * ldw], true);
+            cudaMemcpyAsync(work + 2 * ldw, work_dev + 2 * ldw,
+                            static_cast<std::size_t>(n) * sizeof(double),
+                            cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
+            cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+        } else
+#endif
+        {
+            BoundaryElement::matrix_vector(-1., x, 1., &work[2 * ldw]);
+        }
     }
 
     if (params_.precondition_) BoundaryElement::precondition_block   (work, &work[2 * ldw]);
     else                       BoundaryElement::precondition_diagonal(work, &work[2 * ldw]);
 
+#ifdef USE_CUDA_CC
+    if (use_cuda_gmres) {
+        cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw, static_cast<std::size_t>(n) * sizeof(double),
+                        cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+        cudaMemcpyAsync(work_dev, work, static_cast<std::size_t>(n) * sizeof(double),
+                        cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+    }
+#endif
+
     double bnrm2 = dnrm2_(n, b);
     if (bnrm2 == 0.) bnrm2 = 1.;
     
+#ifdef USE_CUDA_CC
+    if (use_cuda_gmres) {
+        const double wnorm = gmres_cuda_dnrm2(work_dev, static_cast<std::size_t>(n),
+                                              partials_dev, partials_len, cuda_stream);
+        if (wnorm / bnrm2 < tol) {
+            if (mapped_work) {
+                for (long int k = 0; k < restrt + 4; ++k) {
+                    double* seg = work + k * ldw;
+                    acc_unmap_data(seg);
+                }
+                mapped_work = false;
+                mapped_work_segments = 0;
+            }
+            if (mapped_x) {
+                acc_unmap_data(x);
+                mapped_x = false;
+            }
+            if (work_dev) cudaFree(work_dev);
+            if (partials_dev) cudaFree(partials_dev);
+            if (x_dev) cudaFree(x_dev);
+            if (h_dev) cudaFree(h_dev);
+            return 0;
+        }
+    } else
+#endif
     if (dnrm2_(n, work) / bnrm2 < tol) {
         return 0;
     }
@@ -139,10 +373,21 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
 
     /*        Construct the first column of V. */
 
-        for (long int idx = 0; idx < n; ++idx) work[3 * ldw + idx] = work[idx];
-        
-        double rnorm = dnrm2_(n, &work[3 * ldw]);
-        dscal_(n, 1. / rnorm, &work[3 * ldw]);
+#ifdef USE_CUDA_CC
+        double rnorm = 0.0;
+        if (use_cuda_gmres) {
+            gmres_cuda_copy(work_dev + 3 * ldw, work_dev, static_cast<std::size_t>(n), cuda_stream);
+            rnorm = gmres_cuda_dnrm2(work_dev + 3 * ldw, static_cast<std::size_t>(n),
+                                     partials_dev, partials_len, cuda_stream);
+            gmres_cuda_dscal(work_dev + 3 * ldw, 1. / rnorm, static_cast<std::size_t>(n), cuda_stream);
+            cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+        } else
+#endif
+        {
+            for (long int idx = 0; idx < n; ++idx) work[3 * ldw + idx] = work[idx];
+            rnorm = dnrm2_(n, &work[3 * ldw]);
+            dscal_(n, 1. / rnorm, &work[3 * ldw]);
+        }
 
     /*        Initialize S to the elementary vector E1 scaled by RNORM. */
 
@@ -152,14 +397,52 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
         for (long int i = 0; i < restrt; ++i) {
             ++iter;
 
-            BoundaryElement::matrix_vector(1., &work[(3 + i) * ldw], 0., &work[2 * ldw]);
+            #ifdef USE_CUDA_CC
+            if (use_cuda_gmres) {
+                if (debug_map) {
+                    const std::size_t bytes = static_cast<std::size_t>(n) * sizeof(double);
+                    const bool v_ok = acc_is_present(&work[(3 + i) * ldw], bytes);
+                    const bool w_ok = acc_is_present(&work[2 * ldw], bytes);
+                    const bool x_ok = acc_is_present(x, bytes);
+                    if (!v_ok || !w_ok || !x_ok) {
+                        std::cerr << "[CUDA_GMRES] missing mapping before matrix_vector"
+                                  << " iter=" << iter << " i=" << i
+                                  << " v=" << v_ok << " w=" << w_ok << " x=" << x_ok
+                                  << " v_ptr=" << static_cast<const void*>(&work[(3 + i) * ldw])
+                                  << " w_ptr=" << static_cast<const void*>(&work[2 * ldw])
+                                  << " x_ptr=" << static_cast<const void*>(x)
+                                  << " bytes=" << bytes << "\n";
+                        std::exit(1);
+                    }
+                }
+                BoundaryElement::matrix_vector(1., &work[(3 + i) * ldw], 0., &work[2 * ldw], true);
+                cudaMemcpyAsync(work + 2 * ldw, work_dev + 2 * ldw,
+                                static_cast<std::size_t>(n) * sizeof(double),
+                                cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
+                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+            } else
+            #endif
+            {
+                BoundaryElement::matrix_vector(1., &work[(3 + i) * ldw], 0., &work[2 * ldw]);
+            }
             if (params_.precondition_) BoundaryElement::precondition_block   (&work[2 * ldw], &work[2 * ldw]);
             else                       BoundaryElement::precondition_diagonal(&work[2 * ldw], &work[2 * ldw]);
 
         /*           Construct I-th column of H orthnormal to the previous */
         /*           I-1 columns. */
-
-            basis_(i+1, n, &h[i * ldh], &work[3 * ldw], ldw, &work[2 * ldw]);
+#ifdef USE_CUDA_CC
+            if (use_cuda_gmres) {
+                cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw,
+                                static_cast<std::size_t>(n) * sizeof(double),
+                                cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+                basis_cuda_(i + 1, n, &h[i * ldh], work_dev + 3 * ldw, ldw,
+                            work_dev + 2 * ldw, partials_dev, partials_len, cuda_stream);
+                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+            } else
+#endif
+            {
+                basis_(i+1, n, &h[i * ldh], &work[3 * ldw], ldw, &work[2 * ldw]);
+            }
 
         /*           Apply Givens rotations to the I-th column of H. This */
         /*           "updating" of the QR factorization effectively reduces */
@@ -193,33 +476,148 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
 
             if (resid <= tol) {
 
-                update_(i+1, n, x, h, ldh, &work[2 * ldw], &work[ldw], &work[3 * ldw], ldw);
+#ifdef USE_CUDA_CC
+                if (use_cuda_gmres) {
+                    update_cuda_(i + 1, n, x, h, ldh,
+                                 &work[ldw],
+                                 work_dev + 3 * ldw, ldw,
+                                 work_dev, ldw,
+                                 x_dev, h_dev,
+                                 cuda_stream);
+                } else
+#endif
+                {
+                    update_(i+1, n, x, h, ldh, &work[2 * ldw], &work[ldw], &work[3 * ldw], ldw);
+                }
 
+#ifdef USE_CUDA_CC
+                if (mapped_work) {
+                    for (long int k = 0; k < restrt + 4; ++k) {
+                        double* seg = work + k * ldw;
+                        acc_unmap_data(seg);
+                    }
+                    mapped_work = false;
+                    mapped_work_segments = 0;
+                }
+                if (mapped_x) {
+                    acc_unmap_data(x);
+                    mapped_x = false;
+                }
+                if (work_dev) cudaFree(work_dev);
+                if (partials_dev) cudaFree(partials_dev);
+                if (x_dev) cudaFree(x_dev);
+                if (h_dev) cudaFree(h_dev);
+#endif
                 return 0;
             }
         }
 
     /*        Compute current solution vector X. */
 
-        update_(restrt, n, x, h, ldh, &work[2 * ldw], &
-                work[ldw], &work[3 * ldw], ldw);
+#ifdef USE_CUDA_CC
+        if (use_cuda_gmres) {
+            update_cuda_(restrt, n, x, h, ldh,
+                         &work[ldw],
+                         work_dev + 3 * ldw, ldw,
+                         work_dev, ldw,
+                         x_dev, h_dev,
+                         cuda_stream);
+        } else
+#endif
+        {
+            update_(restrt, n, x, h, ldh, &work[2 * ldw], &
+                    work[ldw], &work[3 * ldw], ldw);
+        }
 
     /*        Compute residual vector R, find norm, then check for tolerance. */
 
         for (long int idx = 0; idx < n; ++idx) work[2 * ldw + idx] = b[idx];
         
-        BoundaryElement::matrix_vector(-1., x, 1., &work[2 * ldw]);
+        #ifdef USE_CUDA_CC
+        if (use_cuda_gmres) {
+            if (debug_map) {
+                const std::size_t bytes = static_cast<std::size_t>(n) * sizeof(double);
+                const bool x_ok = acc_is_present(x, bytes);
+                const bool w_ok = acc_is_present(&work[2 * ldw], bytes);
+                if (!x_ok || !w_ok) {
+                    std::cerr << "[CUDA_GMRES] missing mapping before residual matrix_vector"
+                              << " iter=" << iter << " x=" << x_ok << " w=" << w_ok
+                              << " x_ptr=" << static_cast<const void*>(x)
+                              << " w_ptr=" << static_cast<const void*>(&work[2 * ldw])
+                              << " bytes=" << bytes << "\n";
+                    std::exit(1);
+                }
+            }
+            cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw,
+                            static_cast<std::size_t>(n) * sizeof(double),
+                            cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+            BoundaryElement::matrix_vector(-1., x, 1., &work[2 * ldw], true);
+            cudaMemcpyAsync(work + 2 * ldw, work_dev + 2 * ldw,
+                            static_cast<std::size_t>(n) * sizeof(double),
+                            cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
+            cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+        } else
+        #endif
+        {
+            BoundaryElement::matrix_vector(-1., x, 1., &work[2 * ldw]);
+        }
         if (params_.precondition_) BoundaryElement::precondition_block   (work, &work[2 * ldw]);
         else                       BoundaryElement::precondition_diagonal(work, &work[2 * ldw]);
 
+#ifdef USE_CUDA_CC
+        if (use_cuda_gmres) {
+            cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw,
+                            static_cast<std::size_t>(n) * sizeof(double),
+                            cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+            cudaMemcpyAsync(work_dev, work,
+                            static_cast<std::size_t>(n) * sizeof(double),
+                            cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
+        }
+#endif
         work[restrt + ldw] = dnrm2_(n, work);
         resid = work[restrt + ldw] / bnrm2;
 
         if (resid <= tol) {
+#ifdef USE_CUDA_CC
+            if (mapped_work) {
+                for (long int k = 0; k < restrt + 4; ++k) {
+                    double* seg = work + k * ldw;
+                    acc_unmap_data(seg);
+                }
+                mapped_work = false;
+                mapped_work_segments = 0;
+            }
+            if (mapped_x) {
+                acc_unmap_data(x);
+                mapped_x = false;
+            }
+            if (work_dev) cudaFree(work_dev);
+            if (partials_dev) cudaFree(partials_dev);
+            if (x_dev) cudaFree(x_dev);
+            if (h_dev) cudaFree(h_dev);
+#endif
             return 0;
         }
         
         if (iter == maxit) {
+#ifdef USE_CUDA_CC
+            if (mapped_work) {
+                for (long int k = 0; k < restrt + 4; ++k) {
+                    double* seg = work + k * ldw;
+                    acc_unmap_data(seg);
+                }
+                mapped_work = false;
+                mapped_work_segments = 0;
+            }
+            if (mapped_x) {
+                acc_unmap_data(x);
+                mapped_x = false;
+            }
+            if (work_dev) cudaFree(work_dev);
+            if (partials_dev) cudaFree(partials_dev);
+            if (x_dev) cudaFree(x_dev);
+            if (h_dev) cudaFree(h_dev);
+#endif
             return 1;
         }
     } /* Restart. */

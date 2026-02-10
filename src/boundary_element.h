@@ -80,7 +80,8 @@ private:
                long int& iter, double& residual);
     
     void matrix_vector(double alpha, const double* __restrict potential_old,
-                       double beta,        double* __restrict potential_new);
+                       double beta,        double* __restrict potential_new,
+                       bool device_ptrs = false);
                        
     void precondition_diagonal(double* z, double* r);
     void precondition_block(double* z, double* r);
@@ -102,7 +103,8 @@ private:
     void particle_particle_interact_all(double* __restrict potential,
                               const double* __restrict potential_old);
     void particle_cluster_interact_all(double* __restrict potential,
-                              const double* __restrict potential_old);
+                              const double* __restrict potential_old,
+                              bool include_pp);
     void cluster_particle_interact_all(double* __restrict potential);
     void cluster_cluster_interact_all(double* __restrict potential);
             

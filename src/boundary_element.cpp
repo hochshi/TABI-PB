@@ -14,6 +14,11 @@
 #include <cuda_runtime.h>
 #include "cc_cuda.h"
 #include "up_cuda.h"
+#include "be_cuda.h"
+#include "down_cuda.h"
+#include "pc_cuda.h"
+#include "pp_cuda.h"
+#include "pppc_cuda.h"
 
 extern "C" {
     CUcontext acc_get_cuda_context(void) __attribute__((weak));
@@ -189,7 +194,8 @@ void BoundaryElement::run_GMRES()
 
 
 void BoundaryElement::matrix_vector(double alpha, const double* __restrict potential_old,
-                                     double beta,       double* __restrict potential_new)
+                                     double beta,       double* __restrict potential_new,
+                                     bool device_ptrs)
 {
     timers_.matrix_vector.start();
 
@@ -201,7 +207,36 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
 
 #ifdef OPENACC_ENABLED
     #pragma acc enter data copyin(potential_old[0:potential_num], \
-                                  potential_new[0:potential_num])
+                                  potential_new[0:potential_num]) if (!device_ptrs)
+#ifdef USE_CUDA_CC
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const bool present_ok = acc_is_present((void*)potential_new, potential_num * sizeof(double)) &&
+                                acc_is_present((void*)potential_temp, potential_num * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(potential_new, potential_temp)
+            {
+                be_potential_copy_zero_cuda(potential_new, potential_temp, potential_new, potential_num, stream);
+            }
+        } else if (require_all) {
+            std::cerr << "[CUDA_BE] require_all set but potential buffers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        } else {
+            #pragma acc parallel loop present(potential_new[0:potential_num], \
+                                              potential_temp[0:potential_num])
+            for (std::size_t i = 0; i < potential_num; ++i)
+                potential_temp[i] = potential_new[i];
+
+            #pragma acc parallel loop present(potential_new[0:potential_num])
+            for (std::size_t i = 0; i < potential_num; ++i)
+                potential_new[i] = 0.;
+        }
+    }
+#else
     #pragma acc parallel loop present(potential_new[0:potential_num], \
                                       potential_temp[0:potential_num])
     for (std::size_t i = 0; i < potential_num; ++i)
@@ -210,6 +245,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     #pragma acc parallel loop present(potential_new[0:potential_num])
     for (std::size_t i = 0; i < potential_num; ++i)
         potential_new[i] = 0.;
+#endif
 #else
     std::memcpy(potential_temp, potential_new, potential_num * sizeof(double));
     std::memset(potential_new, 0, potential_num * sizeof(double));
@@ -221,7 +257,23 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     elements_.compute_charges(potential_old);
     BoundaryElement::upward_pass();
 
-    BoundaryElement::particle_cluster_interact_all(potential_new, potential_old);
+    bool use_fused_pppc = false;
+#ifdef OPENACC_ENABLED
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const char* fused_env = std::getenv("TABIPB_CUDA_PPPC_FUSED");
+        const char* require_fused_env = std::getenv("TABIPB_CUDA_REQUIRE_PPPC");
+        const bool require_fused = require_all || (require_fused_env && std::strcmp(require_fused_env, "0") != 0);
+        use_fused_pppc = require_fused || (fused_env && std::strcmp(fused_env, "0") != 0);
+    }
+#endif
+    if (use_fused_pppc) {
+        BoundaryElement::particle_cluster_interact_all(potential_new, potential_old, true);
+    } else {
+        BoundaryElement::particle_particle_interact_all(potential_new, potential_old);
+        BoundaryElement::particle_cluster_interact_all(potential_new, potential_old, false);
+    }
     BoundaryElement::cluster_cluster_interact_all(potential_new);
 
 #ifdef OPENACC_ENABLED
@@ -231,22 +283,44 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     BoundaryElement::downward_pass(potential_new);
 
 #ifdef OPENACC_ENABLED
-    #pragma acc parallel loop present(potential_old[0:potential_num], \
-                                      potential_new[0:potential_num], \
-                                      potential_temp[0:potential_num])
-    for (std::size_t i = 0; i < potential_num / 2; ++i)
-        potential_new[i] = beta * potential_temp[i]
-                + alpha * (potential_coeff_1 * potential_old[i] - potential_new[i]);
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const bool present_ok = acc_is_present((void*)potential_old, potential_num * sizeof(double)) &&
+                                acc_is_present((void*)potential_new, potential_num * sizeof(double)) &&
+                                acc_is_present((void*)potential_temp, potential_num * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(potential_old, potential_temp, potential_new)
+            {
+                be_potential_combine_cuda(potential_old, potential_temp, potential_new,
+                                          potential_num, alpha, beta,
+                                          potential_coeff_1, potential_coeff_2,
+                                          stream);
+            }
+        } else if (require_all) {
+            std::cerr << "[CUDA_BE] require_all set but potential buffers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        } else {
+            #pragma acc parallel loop present(potential_old[0:potential_num], \
+                                              potential_new[0:potential_num], \
+                                              potential_temp[0:potential_num])
+            for (std::size_t i = 0; i < potential_num / 2; ++i)
+                potential_new[i] = beta * potential_temp[i]
+                        + alpha * (potential_coeff_1 * potential_old[i] - potential_new[i]);
 
-    #pragma acc parallel loop present(potential_old[0:potential_num], \
-                                      potential_new[0:potential_num], \
-                                      potential_temp[0:potential_num])
-    for (std::size_t i = potential_num / 2; i < potential_num; ++i)
-        potential_new[i] =  beta * potential_temp[i]
-                + alpha * (potential_coeff_2 * potential_old[i] - potential_new[i]);
-
-    #pragma acc exit data copyout(potential_new[0:potential_num])
-    #pragma acc exit data delete(potential_old[0:potential_num])
+            #pragma acc parallel loop present(potential_old[0:potential_num], \
+                                              potential_new[0:potential_num], \
+                                              potential_temp[0:potential_num])
+            for (std::size_t i = potential_num / 2; i < potential_num; ++i)
+                potential_new[i] =  beta * potential_temp[i]
+                        + alpha * (potential_coeff_2 * potential_old[i] - potential_new[i]);
+        }
+    }
+    #pragma acc exit data copyout(potential_new[0:potential_num]) if (!device_ptrs)
+    #pragma acc exit data delete(potential_old[0:potential_num]) if (!device_ptrs)
 #else
     for (std::size_t i = 0; i < potential_.size() / 2; ++i)
         potential_new[i] = beta * potential_temp[i]
@@ -802,6 +876,103 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 #ifdef OPENACC_ENABLED
     std::size_t offsets_num = pp_offsets_u32_.size();
     std::size_t sources_num = pp_sources_u32_.size();
+#ifdef USE_CUDA_CC
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const char* require_pp_env = std::getenv("TABIPB_CUDA_REQUIRE_PP");
+        const bool require_cuda_pp = require_all || (require_pp_env && std::strcmp(require_pp_env, "0") != 0);
+
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_nx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_ny_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_nz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_area_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)potential, (num_elements * 2) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)potential_old, (num_elements * 2) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)offsets_ptr, offsets_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)sources_ptr, sources_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)element_node_idx_u32_.data(), num_elements * sizeof(std::uint32_t));
+
+        if (require_cuda_pp && !present_ok) {
+            std::cerr << "[CUDA_PP] require set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            static bool cu_inited = false;
+            if (!cu_inited) {
+                cuInit(0);
+                cu_inited = true;
+            }
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            const std::uint32_t* __restrict element_node_idx_ptr = element_node_idx_u32_.data();
+            #pragma acc host_data use_device(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                             elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
+                                             elements_area_ptr, potential, potential_old, \
+                                             node_begin_ptr, node_end_ptr, offsets_ptr, sources_ptr, \
+                                             element_node_idx_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                pp_interact_cuda(eps,
+                                 kappa,
+                                 kappa2,
+                                 elements_x_ptr,
+                                 elements_y_ptr,
+                                 elements_z_ptr,
+                                 elements_nx_ptr,
+                                 elements_ny_ptr,
+                                 elements_nz_ptr,
+                                 elements_area_ptr,
+                                 potential_old,
+                                 potential,
+                                 num_elements,
+                                 element_node_idx_ptr,
+                                 num_nodes,
+                                 node_begin_ptr,
+                                 node_end_ptr,
+                                 offsets_ptr,
+                                 sources_ptr,
+                                 offsets_num,
+                                 sources_num,
+                                 stream);
+            }
+            timers_.particle_particle_interact.stop();
+            return;
+        } else if (require_cuda_pp) {
+            std::cerr << "[CUDA_PP] require set but pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
+#else
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const char* require_pp_env = std::getenv("TABIPB_CUDA_REQUIRE_PP");
+        if (require_all || (require_pp_env && std::strcmp(require_pp_env, "0") != 0)) {
+            std::cerr << "[CUDA_PP] require set but binary was built without USE_CUDA_CC. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
+#endif
     #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
                                            elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
                                            elements_area_ptr, potential, potential_old, \
@@ -899,7 +1070,8 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 
 
 void BoundaryElement::particle_cluster_interact_all(double* __restrict potential,
-                                                    const double* __restrict potential_old)
+                                                    const double* __restrict potential_old,
+                                                    bool include_pp)
 {
     timers_.particle_cluster_interact.start();
 
@@ -967,6 +1139,221 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
     std::size_t pp_sources_num = pp_sources_u32_.size();
     std::size_t pc_offsets_num = pc_offsets_u32_.size();
     std::size_t pc_sources_num = pc_sources_u32_.size();
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const char* require_pc_env = std::getenv("TABIPB_CUDA_REQUIRE_PC");
+    const bool require_cuda_pc = require_all || (require_pc_env && std::strcmp(require_pc_env, "0") != 0);
+    const char* fused_env = std::getenv("TABIPB_CUDA_PPPC_FUSED");
+    const char* require_fused_env = std::getenv("TABIPB_CUDA_REQUIRE_PPPC");
+    const bool require_fused = require_all || (require_fused_env && std::strcmp(require_fused_env, "0") != 0);
+    const bool use_fused = require_fused || (fused_env && std::strcmp(fused_env, "0") != 0);
+#ifdef USE_CUDA_CC
+    if (include_pp && use_fused) {
+        bool present_ok = true;
+        std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
+        std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node) * num_nodes;
+        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_nx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_ny_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_nz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_area_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)potential, (num_elements * 2) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)potential_old, (num_elements * 2) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)element_node_idx_ptr, num_elements * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)pp_offsets_ptr, pp_offsets_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)pp_sources_ptr, pp_sources_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)pc_offsets_ptr, pc_offsets_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)pc_sources_ptr, pc_sources_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
+
+        if (require_fused && !present_ok) {
+            std::cerr << "[CUDA_PPPC] require set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            static bool cu_inited = false;
+            if (!cu_inited) {
+                cuInit(0);
+                cu_inited = true;
+            }
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                             elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, elements_area_ptr, \
+                                             targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
+                                             potential, potential_old, element_node_idx_ptr, \
+                                             pp_offsets_ptr, pp_sources_ptr, pc_offsets_ptr, pc_sources_ptr, \
+                                             node_begin_ptr, node_end_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                pppc_interact_cuda(num_interp_pts_per_node,
+                                   num_charges_per_node,
+                                   eps,
+                                   kappa,
+                                   kappa2,
+                                   clusters_x_ptr,
+                                   clusters_y_ptr,
+                                   clusters_z_ptr,
+                                   clusters_q_ptr,
+                                   clusters_q_dx_ptr,
+                                   clusters_q_dy_ptr,
+                                   clusters_q_dz_ptr,
+                                   elements_x_ptr,
+                                   elements_y_ptr,
+                                   elements_z_ptr,
+                                   elements_nx_ptr,
+                                   elements_ny_ptr,
+                                   elements_nz_ptr,
+                                   elements_area_ptr,
+                                   targets_q_ptr,
+                                   targets_q_dx_ptr,
+                                   targets_q_dy_ptr,
+                                   targets_q_dz_ptr,
+                                   potential_old,
+                                   potential,
+                                   num_elements,
+                                   element_node_idx_ptr,
+                                   num_nodes,
+                                   node_begin_ptr,
+                                   node_end_ptr,
+                                   pp_offsets_ptr,
+                                   pp_sources_ptr,
+                                   pp_offsets_num,
+                                   pp_sources_num,
+                                   pc_offsets_ptr,
+                                   pc_sources_ptr,
+                                   pc_offsets_num,
+                                   pc_sources_num,
+                                   stream);
+            }
+            timers_.particle_cluster_interact.stop();
+            return;
+        }
+    } else if (!include_pp) {
+        bool present_ok = true;
+        std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
+        std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node) * num_nodes;
+        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)potential, (num_elements * 2) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)element_node_idx_ptr, num_elements * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)pc_offsets_ptr, pc_offsets_num * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)pc_sources_ptr, pc_sources_num * sizeof(std::uint32_t));
+
+        if (require_cuda_pc && !present_ok) {
+            std::cerr << "[CUDA_PC] require set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            static bool cu_inited = false;
+            if (!cu_inited) {
+                cuInit(0);
+                cu_inited = true;
+            }
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
+                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                             targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
+                                             potential, element_node_idx_ptr, pc_offsets_ptr, pc_sources_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                pc_interact_cuda(num_interp_pts_per_node,
+                                 num_charges_per_node,
+                                 eps,
+                                 kappa,
+                                 kappa2,
+                                 clusters_x_ptr,
+                                 clusters_y_ptr,
+                                 clusters_z_ptr,
+                                 clusters_q_ptr,
+                                 clusters_q_dx_ptr,
+                                 clusters_q_dy_ptr,
+                                 clusters_q_dz_ptr,
+                                 elements_x_ptr,
+                                 elements_y_ptr,
+                                 elements_z_ptr,
+                                 targets_q_ptr,
+                                 targets_q_dx_ptr,
+                                 targets_q_dy_ptr,
+                                 targets_q_dz_ptr,
+                                 potential,
+                                 num_elements,
+                                 element_node_idx_ptr,
+                                 num_nodes,
+                                 pc_offsets_ptr,
+                                 pc_sources_ptr,
+                                 pc_offsets_num,
+                                 pc_sources_num,
+                                 stream);
+            }
+            timers_.particle_cluster_interact.stop();
+            return;
+        }
+    }
+#else
+    if (!include_pp && require_cuda_pc) {
+        std::cerr << "[CUDA_PC] require set but binary was built without USE_CUDA_CC. "
+                  << "Aborting to avoid OpenACC fallback.\n";
+        std::exit(1);
+    }
+    if (include_pp && require_fused) {
+        std::cerr << "[CUDA_PPPC] require set but binary was built without USE_CUDA_CC. "
+                  << "Aborting to avoid OpenACC fallback.\n";
+        std::exit(1);
+    }
+#endif
     if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
         int n  = num_interp_pts_per_node;
         int n2 = n * n;
@@ -1031,55 +1418,57 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                     pot_comp_dz[t] = 0.;
                 }
 
-                for (std::size_t s = pp_start; s < pp_end; ++s) {
-                    std::size_t source_node_idx = pp_sources_ptr[s];
-                    std::size_t source_begin = node_begin_ptr[source_node_idx];
-                    std::size_t source_end   = node_end_ptr[source_node_idx];
+                if (include_pp) {
+                    for (std::size_t s = pp_start; s < pp_end; ++s) {
+                        std::size_t source_node_idx = pp_sources_ptr[s];
+                        std::size_t source_begin = node_begin_ptr[source_node_idx];
+                        std::size_t source_end   = node_end_ptr[source_node_idx];
 
-                    for (std::size_t k = source_begin; k < source_end; ++k) {
-                        double source_x = elements_x_ptr[k];
-                        double source_y = elements_y_ptr[k];
-                        double source_z = elements_z_ptr[k];
+                        for (std::size_t k = source_begin; k < source_end; ++k) {
+                            double source_x = elements_x_ptr[k];
+                            double source_y = elements_y_ptr[k];
+                            double source_z = elements_z_ptr[k];
 
-                        double source_nx = elements_nx_ptr[k];
-                        double source_ny = elements_ny_ptr[k];
-                        double source_nz = elements_nz_ptr[k];
-                        double source_area = elements_area_ptr[k];
+                            double source_nx = elements_nx_ptr[k];
+                            double source_ny = elements_ny_ptr[k];
+                            double source_nz = elements_nz_ptr[k];
+                            double source_area = elements_area_ptr[k];
 
-                        double potential_old_0 = potential_old[k];
-                        double potential_old_1 = potential_old[k + num_elements];
+                            double potential_old_0 = potential_old[k];
+                            double potential_old_1 = potential_old[k + num_elements];
 
-                        #pragma acc loop vector
-                        for (int t = 0; t < tile_len; ++t) {
-                            double dist_x = source_x - target_x_cache[t];
-                            double dist_y = source_y - target_y_cache[t];
-                            double dist_z = source_z - target_z_cache[t];
-                            double r = std::sqrt(dist_x * dist_x + dist_y * dist_y + dist_z * dist_z);
+                            #pragma acc loop vector
+                            for (int t = 0; t < tile_len; ++t) {
+                                double dist_x = source_x - target_x_cache[t];
+                                double dist_y = source_y - target_y_cache[t];
+                                double dist_z = source_z - target_z_cache[t];
+                                double r = std::sqrt(dist_x * dist_x + dist_y * dist_y + dist_z * dist_z);
 
-                            if (r > 0) {
-                                double one_over_r = 1. / r;
-                                double G0 = constants::ONE_OVER_4PI * one_over_r;
-                                double kappa_r = kappa * r;
-                                double exp_kappa_r = std::exp(-kappa_r);
-                                double Gk = exp_kappa_r * G0;
+                                if (r > 0) {
+                                    double one_over_r = 1. / r;
+                                    double G0 = constants::ONE_OVER_4PI * one_over_r;
+                                    double kappa_r = kappa * r;
+                                    double exp_kappa_r = std::exp(-kappa_r);
+                                    double Gk = exp_kappa_r * G0;
 
-                                double source_cos = (source_nx * dist_x + source_ny * dist_y + source_nz * dist_z) * one_over_r;
-                                double target_cos = (target_nx_cache[t] * dist_x + target_ny_cache[t] * dist_y + target_nz_cache[t] * dist_z) * one_over_r;
+                                    double source_cos = (source_nx * dist_x + source_ny * dist_y + source_nz * dist_z) * one_over_r;
+                                    double target_cos = (target_nx_cache[t] * dist_x + target_ny_cache[t] * dist_y + target_nz_cache[t] * dist_z) * one_over_r;
 
-                                double tp1 = G0 * one_over_r;
-                                double tp2 = (1. + kappa_r) * exp_kappa_r;
+                                    double tp1 = G0 * one_over_r;
+                                    double tp2 = (1. + kappa_r) * exp_kappa_r;
 
-                                double dot_tqsq = source_nx * target_nx_cache[t] + source_ny * target_ny_cache[t] + source_nz * target_nz_cache[t];
-                                double G3 = (dot_tqsq - 3. * target_cos * source_cos) * one_over_r * tp1;
-                                double G4 = tp2 * G3 - kappa2 * target_cos * source_cos * Gk;
+                                    double dot_tqsq = source_nx * target_nx_cache[t] + source_ny * target_ny_cache[t] + source_nz * target_nz_cache[t];
+                                    double G3 = (dot_tqsq - 3. * target_cos * source_cos) * one_over_r * tp1;
+                                    double G4 = tp2 * G3 - kappa2 * target_cos * source_cos * Gk;
 
-                                double L1 = source_cos  * tp1 * (1. - tp2 * eps);
-                                double L2 = G0 - Gk;
-                                double L3 = G4 - G3;
-                                double L4 = target_cos * tp1 * (1. - tp2 / eps);
+                                    double L1 = source_cos  * tp1 * (1. - tp2 * eps);
+                                    double L2 = G0 - Gk;
+                                    double L3 = G4 - G3;
+                                    double L4 = target_cos * tp1 * (1. - tp2 / eps);
 
-                                pot_pp_1[t] += (L1 * potential_old_0 + L2 * potential_old_1) * source_area;
-                                pot_pp_2[t] += (L3 * potential_old_0 + L4 * potential_old_1) * source_area;
+                                    pot_pp_1[t] += (L1 * potential_old_0 + L2 * potential_old_1) * source_area;
+                                    pot_pp_2[t] += (L3 * potential_old_0 + L4 * potential_old_1) * source_area;
+                                }
                             }
                         }
                     }
@@ -1207,56 +1596,58 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
         double pot_pp_1 = 0.;
         double pot_pp_2 = 0.;
 
-        for (std::size_t s = pp_start; s < pp_end; ++s) {
-            std::size_t source_node_idx = pp_sources_ptr[s];
-            std::size_t source_begin = node_begin_ptr[source_node_idx];
-            std::size_t source_end   = node_end_ptr[source_node_idx];
+        if (include_pp) {
+            for (std::size_t s = pp_start; s < pp_end; ++s) {
+                std::size_t source_node_idx = pp_sources_ptr[s];
+                std::size_t source_begin = node_begin_ptr[source_node_idx];
+                std::size_t source_end   = node_end_ptr[source_node_idx];
 
 #ifdef OPENACC_ENABLED
-            #pragma acc loop vector reduction(+:pot_pp_1, pot_pp_2)
+                #pragma acc loop vector reduction(+:pot_pp_1, pot_pp_2)
 #endif
-            for (std::size_t k = source_begin; k < source_end; ++k) {
-                double source_x = elements_x_ptr[k];
-                double source_y = elements_y_ptr[k];
-                double source_z = elements_z_ptr[k];
+                for (std::size_t k = source_begin; k < source_end; ++k) {
+                    double source_x = elements_x_ptr[k];
+                    double source_y = elements_y_ptr[k];
+                    double source_z = elements_z_ptr[k];
 
-                double source_nx = elements_nx_ptr[k];
-                double source_ny = elements_ny_ptr[k];
-                double source_nz = elements_nz_ptr[k];
-                double source_area = elements_area_ptr[k];
+                    double source_nx = elements_nx_ptr[k];
+                    double source_ny = elements_ny_ptr[k];
+                    double source_nz = elements_nz_ptr[k];
+                    double source_area = elements_area_ptr[k];
 
-                double potential_old_0 = potential_old[k];
-                double potential_old_1 = potential_old[k + num_elements];
+                    double potential_old_0 = potential_old[k];
+                    double potential_old_1 = potential_old[k + num_elements];
 
-                double dist_x = source_x - target_x;
-                double dist_y = source_y - target_y;
-                double dist_z = source_z - target_z;
-                double r = std::sqrt(dist_x * dist_x + dist_y * dist_y + dist_z * dist_z);
+                    double dist_x = source_x - target_x;
+                    double dist_y = source_y - target_y;
+                    double dist_z = source_z - target_z;
+                    double r = std::sqrt(dist_x * dist_x + dist_y * dist_y + dist_z * dist_z);
 
-                if (r > 0) {
-                    double one_over_r = 1. / r;
-                    double G0 = constants::ONE_OVER_4PI * one_over_r;
-                    double kappa_r = kappa * r;
-                    double exp_kappa_r = std::exp(-kappa_r);
-                    double Gk = exp_kappa_r * G0;
+                    if (r > 0) {
+                        double one_over_r = 1. / r;
+                        double G0 = constants::ONE_OVER_4PI * one_over_r;
+                        double kappa_r = kappa * r;
+                        double exp_kappa_r = std::exp(-kappa_r);
+                        double Gk = exp_kappa_r * G0;
 
-                    double source_cos = (source_nx * dist_x + source_ny * dist_y + source_nz * dist_z) * one_over_r;
-                    double target_cos = (target_nx * dist_x + target_ny * dist_y + target_nz * dist_z) * one_over_r;
+                        double source_cos = (source_nx * dist_x + source_ny * dist_y + source_nz * dist_z) * one_over_r;
+                        double target_cos = (target_nx * dist_x + target_ny * dist_y + target_nz * dist_z) * one_over_r;
 
-                    double tp1 = G0 * one_over_r;
-                    double tp2 = (1. + kappa_r) * exp_kappa_r;
+                        double tp1 = G0 * one_over_r;
+                        double tp2 = (1. + kappa_r) * exp_kappa_r;
 
-                    double dot_tqsq = source_nx * target_nx + source_ny * target_ny + source_nz * target_nz;
-                    double G3 = (dot_tqsq - 3. * target_cos * source_cos) * one_over_r * tp1;
-                    double G4 = tp2 * G3 - kappa2 * target_cos * source_cos * Gk;
+                        double dot_tqsq = source_nx * target_nx + source_ny * target_ny + source_nz * target_nz;
+                        double G3 = (dot_tqsq - 3. * target_cos * source_cos) * one_over_r * tp1;
+                        double G4 = tp2 * G3 - kappa2 * target_cos * source_cos * Gk;
 
-                    double L1 = source_cos  * tp1 * (1. - tp2 * eps);
-                    double L2 = G0 - Gk;
-                    double L3 = G4 - G3;
-                    double L4 = target_cos * tp1 * (1. - tp2 / eps);
+                        double L1 = source_cos  * tp1 * (1. - tp2 * eps);
+                        double L2 = G0 - Gk;
+                        double L3 = G4 - G3;
+                        double L4 = target_cos * tp1 * (1. - tp2 / eps);
 
-                    pot_pp_1 += (L1 * potential_old_0 + L2 * potential_old_1) * source_area;
-                    pot_pp_2 += (L3 * potential_old_0 + L4 * potential_old_1) * source_area;
+                        pot_pp_1 += (L1 * potential_old_0 + L2 * potential_old_1) * source_area;
+                        pot_pp_2 += (L3 * potential_old_0 + L4 * potential_old_1) * source_area;
+                    }
                 }
             }
         }
@@ -1644,8 +2035,10 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
 #endif
 
 #ifdef OPENACC_ENABLED
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
     const char* require_cuda_env = std::getenv("TABIPB_CUDA_REQUIRE_CC");
-    const bool require_cuda_cc = (require_cuda_env && std::strcmp(require_cuda_env, "0") != 0);
+    const bool require_cuda_cc = require_all || (require_cuda_env && std::strcmp(require_cuda_env, "0") != 0);
     if (require_cuda_cc && num_interp_pts_per_node > kBatchedMaxInterpPts) {
         std::cerr << "[CUDA_CC] require set but num_interp_pts_per_node="
                   << num_interp_pts_per_node
@@ -2449,8 +2842,10 @@ void BoundaryElement::upward_pass()
     if (debug_cuda_upward) {
         std::cerr << "[CUDA_UP] debug mode enabled\n";
     }
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
     const char* require_up_env = std::getenv("TABIPB_CUDA_REQUIRE_UPWARD");
-    const bool require_cuda_upward = (require_up_env && std::strcmp(require_up_env, "0") != 0);
+    const bool require_cuda_upward = require_all || (require_up_env && std::strcmp(require_up_env, "0") != 0);
     if (require_cuda_upward && num_interp_pts_per_node > kMaxInterpPts) {
         std::cerr << "[CUDA_UP] require set but num_interp_pts_per_node="
                   << num_interp_pts_per_node
@@ -2895,6 +3290,99 @@ void BoundaryElement::downward_pass(double* __restrict potential)
     (void)level_nodes_num;
 #endif
 
+#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    if (require_all && num_interp_pts_per_node > kMaxInterpPts) {
+        std::cerr << "[CUDA_DOWN] require_all set but num_interp_pts_per_node="
+                  << num_interp_pts_per_node
+                  << " exceeds CUDA downward limit " << kMaxInterpPts
+                  << ". Aborting to avoid OpenACC fallback.\n";
+        std::exit(1);
+    }
+    if (num_interp_pts_per_node <= kMaxInterpPts) {
+        const std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
+        const std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node_) * num_nodes;
+        const std::size_t num_elements = elements_.num();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)clusters_p_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)targets_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)weights_ptr, static_cast<std::size_t>(num_interp_pts_per_node) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)potential, (potential_offset + num_elements) * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && acc_is_present((void*)level_nodes_ptr, level_nodes_num * sizeof(std::size_t));
+
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            static bool cu_inited = false;
+            if (!cu_inited) {
+                cuInit(0);
+                cu_inited = true;
+            }
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
+                                             clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
+                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                             targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
+                                             weights_ptr, potential, \
+                                             node_begin_ptr, node_end_ptr, level_nodes_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+
+                for (std::size_t level = 0; level < level_count; ++level) {
+                    std::size_t level_begin = level_offsets_ptr[level];
+                    std::size_t level_end   = level_offsets_ptr[level + 1];
+                    std::size_t num_level_nodes = level_end - level_begin;
+                    if (num_level_nodes == 0) continue;
+                    const std::size_t* level_nodes_dev = level_nodes_ptr + level_begin;
+                    downward_cuda(num_interp_pts_per_node, num_charges_per_node_,
+                                  clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
+                                  clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
+                                  elements_x_ptr, elements_y_ptr, elements_z_ptr,
+                                  targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr,
+                                  weights_ptr,
+                                  potential, potential_offset,
+                                  node_begin_ptr, node_end_ptr,
+                                  level_nodes_dev, num_level_nodes,
+                                  stream);
+                }
+            }
+            timers_.downward_pass.stop();
+            return;
+        }
+
+        if (require_all) {
+            std::cerr << "[CUDA_DOWN] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
+#endif
+#endif
+
     for (std::size_t level = 0; level < level_count; ++level) {
         std::size_t level_begin = level_offsets_ptr[level];
         std::size_t level_end   = level_offsets_ptr[level + 1];
@@ -3175,6 +3663,31 @@ void BoundaryElement::clear_cluster_charges()
     double* __restrict clusters_q_dx_ptr = interp_charge_dx_.data();
     double* __restrict clusters_q_dy_ptr = interp_charge_dy_.data();
     double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
+
+#ifdef USE_CUDA_CC
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool present_ok = acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double)) &&
+                            acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double)) &&
+                            acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double)) &&
+                            acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
+    if (present_ok) {
+        acc_wait(acc_async_sync);
+        void* stream = acc_get_cuda_stream(acc_async_sync);
+        #pragma acc host_data use_device(clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr)
+        {
+            be_clear_cluster_charges_cuda(clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr,
+                                          num_charges, stream);
+        }
+        timers_.clear_cluster_charges.stop();
+        return;
+    }
+    if (require_all) {
+        std::cerr << "[CUDA_BE] require_all set but cluster charges not present on device. "
+                  << "Aborting to avoid OpenACC fallback.\n";
+        std::exit(1);
+    }
+#endif
     
     #pragma acc parallel loop present(clusters_q_ptr, clusters_q_dx_ptr, \
                                       clusters_q_dy_ptr, clusters_q_dz_ptr)
@@ -3205,6 +3718,31 @@ void BoundaryElement::clear_cluster_potentials()
     double* __restrict clusters_p_dx_ptr = interp_potential_dx_.data();
     double* __restrict clusters_p_dy_ptr = interp_potential_dy_.data();
     double* __restrict clusters_p_dz_ptr = interp_potential_dz_.data();
+
+#ifdef USE_CUDA_CC
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool present_ok = acc_is_present((void*)clusters_p_ptr, num_potentials * sizeof(double)) &&
+                            acc_is_present((void*)clusters_p_dx_ptr, num_potentials * sizeof(double)) &&
+                            acc_is_present((void*)clusters_p_dy_ptr, num_potentials * sizeof(double)) &&
+                            acc_is_present((void*)clusters_p_dz_ptr, num_potentials * sizeof(double));
+    if (present_ok) {
+        acc_wait(acc_async_sync);
+        void* stream = acc_get_cuda_stream(acc_async_sync);
+        #pragma acc host_data use_device(clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr)
+        {
+            be_clear_cluster_potentials_cuda(clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
+                                             num_potentials, stream);
+        }
+        timers_.clear_cluster_potentials.stop();
+        return;
+    }
+    if (require_all) {
+        std::cerr << "[CUDA_BE] require_all set but cluster potentials not present on device. "
+                  << "Aborting to avoid OpenACC fallback.\n";
+        std::exit(1);
+    }
+#endif
     
     #pragma acc parallel loop present(clusters_p_ptr, clusters_p_dx_ptr, \
                                       clusters_p_dy_ptr, clusters_p_dz_ptr)

@@ -20,6 +20,11 @@
 #include "constants.h"
 #include "elements.h"
 #include "source_term_compute.h"
+#ifdef USE_CUDA_CC
+#include <openacc.h>
+#include <cuda_runtime.h>
+#include "elements_cuda.h"
+#endif
 
 static double triangle_area(std::array<std::array<double, 3>, 3> v);
 
@@ -549,6 +554,46 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
   double *__restrict source_q_dz_ptr = source_charge_dz_.data();
 
 #ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
+  {
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool present_ok =
+        acc_is_present((void*)nx_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)ny_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)nz_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)area_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)potential_ptr, (2 * num) * sizeof(double)) &&
+        acc_is_present((void*)target_q_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)target_q_dx_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)target_q_dy_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)target_q_dz_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)source_q_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)source_q_dx_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)source_q_dy_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)source_q_dz_ptr, num * sizeof(double));
+    if (present_ok) {
+      acc_wait(acc_async_sync);
+      void* stream = acc_get_cuda_stream(acc_async_sync);
+      #pragma acc host_data use_device(nx_ptr, ny_ptr, nz_ptr, area_ptr, potential_ptr, \
+                                       target_q_ptr, target_q_dx_ptr, target_q_dy_ptr, target_q_dz_ptr, \
+                                       source_q_ptr, source_q_dx_ptr, source_q_dy_ptr, source_q_dz_ptr)
+      {
+        elements_compute_charges_cuda(nx_ptr, ny_ptr, nz_ptr, area_ptr, potential_ptr,
+                                      target_q_ptr, target_q_dx_ptr, target_q_dy_ptr, target_q_dz_ptr,
+                                      source_q_ptr, source_q_dx_ptr, source_q_dy_ptr, source_q_dz_ptr,
+                                      num, stream);
+      }
+      timers_.compute_charges.stop();
+      return;
+    }
+    if (require_all) {
+      std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
+                << "Aborting to avoid OpenACC fallback.\n";
+      std::exit(1);
+    }
+  }
+#endif
 #pragma acc parallel loop present(                                             \
     nx_ptr, ny_ptr, nz_ptr, area_ptr, potential_ptr, target_q_ptr,             \
     target_q_dx_ptr, target_q_dy_ptr, target_q_dz_ptr, source_q_ptr,           \

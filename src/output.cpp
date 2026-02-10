@@ -116,7 +116,7 @@ void Output::compute_solvation_energy()
     
 #ifdef OPENACC_ENABLED
     #pragma acc enter data copyin(potential_ptr[0:potential_num])
-    #pragma acc parallel loop gang present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+#pragma acc parallel loop gang present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
                                       elem_x_ptr, elem_y_ptr, elem_z_ptr, \
                                       elem_nx_ptr, elem_ny_ptr, elem_nz_ptr, \
                                       elem_area_ptr) \
