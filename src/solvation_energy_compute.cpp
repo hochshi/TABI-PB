@@ -1,6 +1,21 @@
 #include <cmath>
 // #include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 #include <vector>
+
+#ifdef OPENACC_ENABLED
+#include <openacc.h>
+#endif
+#ifdef USE_CUDA_CC
+#include <cuda.h>
+#include <cuda_runtime.h>
+extern "C" {
+    CUcontext acc_get_cuda_context(void) __attribute__((weak));
+}
+#include "solvation_energy_cuda.h"
+#endif
 
 #include "constants.h"
 #include "solvation_energy_compute.h"
@@ -102,14 +117,57 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
 
     double* __restrict solv_eng_ptr = solv_eng_vec_.data();
 
-
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(elem_x_ptr, elem_y_ptr, elem_z_ptr, elem_area_ptr, \
-                                                       elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
-                                                       mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                                       solv_eng_ptr, potential_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const std::size_t num_elems = elements_.num();
+        const std::size_t num_atoms = molecule_.num();
+        const std::size_t potential_num = potential_.size();
+        const std::size_t solv_eng_num = solv_eng_vec_.size();
+        const bool present_ok =
+            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dx_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dy_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dz_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)potential_ptr, potential_num * sizeof(double)) &&
+            acc_is_present((void*)solv_eng_ptr, solv_eng_num * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
+                                             elem_area_ptr, mol_x_ptr, mol_y_ptr, mol_z_ptr, \
+                                             mol_q_ptr, potential_ptr, solv_eng_ptr)
+            {
+                solvation_pp_cuda(elem_x_ptr, elem_y_ptr, elem_z_ptr,
+                                  elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
+                                  elem_area_ptr,
+                                  mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                                  potential_ptr, potential_offset_,
+                                  target_node_begin, target_node_end,
+                                  source_node_begin, source_node_end,
+                                  eps_, kappa_,
+                                  solv_eng_ptr, stream);
+            }
+            return;
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_SOLVATION] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
 #endif
+
+
     for (std::size_t j = target_node_begin; j < target_node_end; ++j) {
         
         double target_x = elem_x_ptr[j];
@@ -121,10 +179,6 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
         double pot_temp_dy = 0.;
         double pot_temp_dz = 0.;
         
-#ifdef OPENACC_ENABLED
-        #pragma acc loop reduction(+:pot_temp_dd, pot_temp_dx, \
-                                     pot_temp_dy, pot_temp_dz)
-#endif
         for (std::size_t k = source_node_begin; k < source_node_end; ++k) {
 
             double dx = target_x - mol_x_ptr[k];
@@ -152,9 +206,7 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
                           + elem_q_dy_ptr[j] * pot_temp_dy
                           + elem_q_dz_ptr[j] * pot_temp_dz);
 
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         solv_eng_ptr[0] += pot_temp_1 + pot_temp_2;
@@ -203,14 +255,62 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
 
     double* __restrict solv_eng_ptr = solv_eng_vec_.data();
     
-
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(elem_x_ptr, elem_y_ptr, elem_z_ptr, elem_area_ptr, \
-                    elem_q_dx_ptr,      elem_q_dy_ptr,      elem_q_dz_ptr, \
-                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                    mol_clusters_q_ptr, solv_eng_ptr, potential_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const std::size_t num_elems = elements_.num();
+        const std::size_t num_mol_interp =
+            static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
+        const std::size_t num_mol_interp_q = mol_interp_charge_.size();
+        const std::size_t potential_num = potential_.size();
+        const std::size_t solv_eng_num = solv_eng_vec_.size();
+        const bool present_ok =
+            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dx_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dy_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dz_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_q * sizeof(double)) &&
+            acc_is_present((void*)potential_ptr, potential_num * sizeof(double)) &&
+            acc_is_present((void*)solv_eng_ptr, solv_eng_num * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
+                                             elem_area_ptr, mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                             mol_clusters_q_ptr, potential_ptr, solv_eng_ptr)
+            {
+                solvation_pc_cuda(elem_x_ptr, elem_y_ptr, elem_z_ptr,
+                                  elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
+                                  elem_area_ptr,
+                                  mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                                  mol_clusters_q_ptr,
+                                  potential_ptr, potential_offset_,
+                                  source_node_idx,
+                                  num_mol_interp_pts_per_node,
+                                  num_mol_interp_charges_per_node,
+                                  target_node_begin, target_node_end,
+                                  eps_, kappa_,
+                                  solv_eng_ptr, stream);
+            }
+            return;
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_SOLVATION] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
 #endif
+
+
     for (std::size_t j = target_node_begin; j < target_node_end; ++j) {
 
         double target_x = elem_x_ptr[j];
@@ -222,10 +322,6 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
         double pot_temp_dy = 0.;
         double pot_temp_dz = 0.;
         
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) reduction(+:pot_temp_dd, pot_temp_dx, \
-                                                 pot_temp_dy, pot_temp_dz)
-#endif
         for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
         for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
         for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
@@ -261,9 +357,7 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
                           + elem_q_dy_ptr[j] * pot_temp_dy
                           + elem_q_dz_ptr[j] * pot_temp_dz);
 
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         solv_eng_ptr[0] += pot_temp_1 + pot_temp_2;
@@ -306,13 +400,54 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
 
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
-
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                    elem_clusters_x_ptr, elem_clusters_y_ptr,    elem_clusters_z_ptr, \
-                    elem_clusters_p_ptr, elem_clusters_p_dx_ptr, elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const std::size_t num_mols = molecule_.num();
+        const std::size_t num_elem_interp = elem_interp_pts_.num_interp_pts_per_node() * target_tree_.num_nodes();
+        const std::size_t num_elem_pots = elem_interp_potential_.size();
+        const bool present_ok =
+            acc_is_present((void*)mol_x_ptr, num_mols * sizeof(double)) &&
+            acc_is_present((void*)mol_y_ptr, num_mols * sizeof(double)) &&
+            acc_is_present((void*)mol_z_ptr, num_mols * sizeof(double)) &&
+            acc_is_present((void*)mol_q_ptr, num_mols * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_ptr, num_elem_pots * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_pots * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_pots * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_pots * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+                                             elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
+                                             elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
+                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
+            {
+                solvation_cp_cuda(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                                  elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
+                                  elem_clusters_p_ptr, elem_clusters_p_dx_ptr,
+                                  elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
+                                  target_node_idx,
+                                  num_elem_interp_pts_per_node,
+                                  num_elem_interp_potentials_per_node,
+                                  source_node_begin, source_node_end,
+                                  eps_, kappa_, stream);
+            }
+            return;
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_SOLVATION] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
 #endif
+
+
     for (int j1 = 0; j1 < num_elem_interp_pts_per_node; ++j1) {
     for (int j2 = 0; j2 < num_elem_interp_pts_per_node; ++j2) {
     for (int j3 = 0; j3 < num_elem_interp_pts_per_node; ++j3) {
@@ -330,10 +465,6 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
         double pot_temp_dy = 0.;
         double pot_temp_dz = 0.;
     
-#ifdef OPENACC_ENABLED
-        #pragma acc loop reduction(+:pot_temp_dd, pot_temp_dx, \
-                                     pot_temp_dy, pot_temp_dz)
-#endif
         for (std::size_t k = source_node_begin; k < source_node_end; ++k) {
 
             double dx = target_x - mol_x_ptr[k];
@@ -354,27 +485,19 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
             pot_temp_dz += L1 * mol_q_ptr[k] * dz;
         }
     
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_ptr   [jj] += pot_temp_dd;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dx_ptr[jj] += pot_temp_dx;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dy_ptr[jj] += pot_temp_dy;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dz_ptr[jj] += pot_temp_dz;
@@ -422,13 +545,59 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
     
     const double* __restrict mol_clusters_q_ptr     = mol_interp_charge_.data();
 
-
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                    mol_clusters_q_ptr,  elem_clusters_x_ptr,    elem_clusters_y_ptr,    elem_clusters_z_ptr, \
-                    elem_clusters_p_ptr, elem_clusters_p_dx_ptr, elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const std::size_t num_elem_interp =
+            static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
+        const std::size_t num_elem_pots = elem_interp_potential_.size();
+        const std::size_t num_mol_interp =
+            static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
+        const std::size_t num_mol_interp_q = mol_interp_charge_.size();
+        const bool present_ok =
+            acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_ptr, num_elem_pots * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_pots * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_pots * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_pots * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp * sizeof(double)) &&
+            acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_q * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                             mol_clusters_q_ptr, elem_clusters_x_ptr, elem_clusters_y_ptr, \
+                                             elem_clusters_z_ptr, elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
+                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr)
+            {
+                solvation_cc_cuda(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                                  mol_clusters_q_ptr,
+                                  elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
+                                  elem_clusters_p_ptr, elem_clusters_p_dx_ptr,
+                                  elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
+                                  target_node_idx, source_node_idx,
+                                  num_elem_interp_pts_per_node_,
+                                  num_elem_interp_potentials_per_node_,
+                                  num_mol_interp_pts_per_node_,
+                                  num_mol_interp_charges_per_node_,
+                                  eps_, kappa_, stream);
+            }
+            return;
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_SOLVATION] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
 #endif
+
+
     for (int j1 = 0; j1 < num_elem_interp_pts_per_node; j1++) {
     for (int j2 = 0; j2 < num_elem_interp_pts_per_node; j2++) {
     for (int j3 = 0; j3 < num_elem_interp_pts_per_node; j3++) {
@@ -446,10 +615,6 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
         double pot_temp_dy = 0.;
         double pot_temp_dz = 0.;
     
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) reduction(+:pot_temp_dd, pot_temp_dx, \
-                                                 pot_temp_dy, pot_temp_dz)
-#endif
         for (int k1 = 0; k1 < num_mol_interp_pts_per_node; k1++) {
         for (int k2 = 0; k2 < num_mol_interp_pts_per_node; k2++) {
         for (int k3 = 0; k3 < num_mol_interp_pts_per_node; k3++) {
@@ -478,27 +643,19 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
         }
         }
     
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_ptr   [jj] += pot_temp_dd;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dx_ptr[jj] += pot_temp_dx;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dy_ptr[jj] += pot_temp_dy;
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         elem_clusters_p_dz_ptr[jj] += pot_temp_dz;
@@ -542,6 +699,94 @@ void SolvationEnergyCompute::upward_pass()
 #ifdef OPENACC_ENABLED
     #pragma acc enter data copyin(weights_ptr[0:weights_num])
 #endif
+
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const std::size_t num_atoms = molecule_.num();
+        const std::size_t num_mol_interp =
+            static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
+        const std::size_t num_mol_interp_q = mol_interp_charge_.size();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_q * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)weights_ptr, weights_num * sizeof(double));
+        if (present_ok) {
+            std::size_t max_particles = 0;
+            for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
+                auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+                std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+                if (num_particles > max_particles) max_particles = num_particles;
+            }
+            if (max_particles > 0) {
+                void* stream = acc_get_cuda_stream(acc_async_sync);
+                int* exact_idx_x_dev = nullptr;
+                int* exact_idx_y_dev = nullptr;
+                int* exact_idx_z_dev = nullptr;
+                double* denominator_dev = nullptr;
+                cudaMalloc(&exact_idx_x_dev, max_particles * sizeof(int));
+                cudaMalloc(&exact_idx_y_dev, max_particles * sizeof(int));
+                cudaMalloc(&exact_idx_z_dev, max_particles * sizeof(int));
+                cudaMalloc(&denominator_dev, max_particles * sizeof(double));
+                #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+                                                 mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                                 mol_clusters_q_ptr, weights_ptr)
+                {
+                    CUcontext acc_ctx = nullptr;
+                    if (acc_get_cuda_context) {
+                        acc_ctx = acc_get_cuda_context();
+                    }
+                    if (acc_ctx == nullptr) {
+                        cuCtxGetCurrent(&acc_ctx);
+                    }
+                    if (acc_ctx != nullptr) {
+                        cuCtxSetCurrent(acc_ctx);
+                    }
+                    for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
+                        auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+                        std::size_t particle_start = particle_idxs[0];
+                        std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+                        if (num_particles == 0) {
+                            continue;
+                        }
+                        solvation_up_cuda(
+                            mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                            mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                            mol_clusters_q_ptr,
+                            weights_ptr,
+                            exact_idx_x_dev, exact_idx_y_dev, exact_idx_z_dev,
+                            denominator_dev,
+                            node_idx,
+                            num_mol_interp_pts_per_node,
+                            num_mol_interp_charges_per_node,
+                            particle_start,
+                            num_particles,
+                            stream);
+                    }
+                }
+                acc_wait(acc_async_sync);
+                cudaFree(exact_idx_x_dev);
+                cudaFree(exact_idx_y_dev);
+                cudaFree(exact_idx_z_dev);
+                cudaFree(denominator_dev);
+                #pragma acc exit data delete(weights_ptr[0:weights_num])
+                return;
+            }
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_SOLVATION] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
+#endif
     
     for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
         
@@ -563,27 +808,14 @@ void SolvationEnergyCompute::upward_pass()
         int* exact_idx_z_ptr = exact_idx_z.data();
         double* denominator_ptr = denominator.data();
         
-#ifdef OPENACC_ENABLED
-#pragma acc kernels present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                            mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                            mol_clusters_q_ptr, weights_ptr) \
-                  create(exact_idx_x_ptr[0:num_particles], exact_idx_y_ptr[0:num_particles], \
-                         exact_idx_z_ptr[0:num_particles], denominator_ptr[0:num_particles])
-#endif
         {
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop vector(32) independent
-#endif
         for (std::size_t i = 0; i < num_particles; ++i) {
             exact_idx_x_ptr[i] = -1;
             exact_idx_y_ptr[i] = -1;
             exact_idx_z_ptr[i] = -1;
         }
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop independent
-#endif
         for (std::size_t i = 0; i < num_particles; ++i) {
         
             double denominator_x = 0.;
@@ -597,9 +829,6 @@ void SolvationEnergyCompute::upward_pass()
 
             // because there's a reduction over exact_idx[i], this loop carries a
             // backward dependence and won't actually parallelize
-#ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:denominator_x,denominator_y,denominator_z) reduction(max:ex,ey,ez)
-#endif
             for (int j = 0; j < num_mol_interp_pts_per_node; ++j) {
             
                 double dist_x = xx - mol_clusters_x_ptr[node_interp_pts_start + j];
@@ -629,9 +858,6 @@ void SolvationEnergyCompute::upward_pass()
             if (exact_idx_z_ptr[i] == -1) denominator_ptr[i] /= denominator_z;
         }
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) independent
-#endif
         for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
         for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
         for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
@@ -651,9 +877,6 @@ void SolvationEnergyCompute::upward_pass()
             
             double q_temp = 0.;
             
-#ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:q_temp)
-#endif
             for (std::size_t i = 0; i < num_particles; i++) {  // loop over source points
             
                 double dist_x = mol_x_ptr[particle_start + i] - cx;
@@ -742,6 +965,80 @@ void SolvationEnergyCompute::downward_pass()
 #ifdef OPENACC_ENABLED
 #pragma acc enter data copyin(weights_ptr[0:weights_num])
 #endif
+
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const std::size_t num_elems = elements_.num();
+        const std::size_t num_elem_interp =
+            static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
+        const std::size_t num_elem_interp_p = elem_interp_potential_.size();
+        const std::size_t potential_num = potential_.size();
+        const std::size_t solv_eng_num = solv_eng_vec_.size();
+        const bool present_ok =
+            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dx_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dy_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_q_dz_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_ptr, num_elem_interp_p * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_interp_p * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_interp_p * sizeof(double)) &&
+            acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_interp_p * sizeof(double)) &&
+            acc_is_present((void*)potential_ptr, potential_num * sizeof(double)) &&
+            acc_is_present((void*)solv_eng_ptr, solv_eng_num * sizeof(double)) &&
+            acc_is_present((void*)weights_ptr, weights_num * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
+                                             elem_area_ptr, elem_clusters_x_ptr, elem_clusters_y_ptr, \
+                                             elem_clusters_z_ptr, elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
+                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr, \
+                                             potential_ptr, solv_eng_ptr, weights_ptr)
+            {
+                for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
+                    auto particle_idxs = target_tree_.node_particle_idxs(node_idx);
+                    std::size_t particle_start = particle_idxs[0];
+                    std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
+                    if (num_particles == 0) {
+                        continue;
+                    }
+                    solvation_down_cuda(
+                        elem_x_ptr, elem_y_ptr, elem_z_ptr,
+                        elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
+                        elem_area_ptr,
+                        elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
+                        elem_clusters_p_ptr, elem_clusters_p_dx_ptr, elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
+                        potential_ptr, potential_offset_,
+                        weights_ptr,
+                        node_idx,
+                        num_elem_interp_pts_per_node,
+                        num_elem_interp_potentials_per_node,
+                        particle_start,
+                        num_particles,
+                        solv_eng_ptr,
+                        stream);
+                }
+            }
+            acc_wait(acc_async_sync);
+            #pragma acc exit data delete(weights_ptr[0:weights_num])
+            return;
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_SOLVATION] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
+#endif
     
     for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
         
@@ -752,14 +1049,6 @@ void SolvationEnergyCompute::downward_pass()
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
 
-#ifdef OPENACC_ENABLED
-#pragma acc parallel loop present(elem_x_ptr,    elem_y_ptr,    elem_z_ptr, elem_area_ptr, \
-                                  elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
-                                  elem_clusters_x_ptr,    elem_clusters_y_ptr,    elem_clusters_z_ptr, \
-                                  elem_clusters_p_ptr,    elem_clusters_p_dx_ptr, \
-                                  elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr, \
-                                  solv_eng_ptr, potential_ptr, weights_ptr)
-#endif
         for (std::size_t i = 0; i < num_particles; ++i) {
         
             double denominator_x = 0.;
@@ -774,10 +1063,6 @@ void SolvationEnergyCompute::downward_pass()
             double yy = elem_y_ptr[particle_start + i];
             double zz = elem_z_ptr[particle_start + i];
             
-#ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:denominator_x,denominator_y,denominator_z) \
-                             reduction(max:exact_idx_x,exact_idx_y,exact_idx_z)
-#endif
             for (int j = 0; j < num_elem_interp_pts_per_node; ++j) {
             
                 double dist_x = xx - elem_clusters_x_ptr[node_interp_pts_start + j];
@@ -807,10 +1092,6 @@ void SolvationEnergyCompute::downward_pass()
             double pot_temp_dy = 0.;
             double pot_temp_dz = 0.;
             
-#ifdef OPENACC_ENABLED
-            #pragma acc loop collapse(3) reduction(+:pot_temp_dd, pot_temp_dx, \
-                                                     pot_temp_dy, pot_temp_dz)
-#endif
             for (int k1 = 0; k1 < num_elem_interp_pts_per_node; ++k1) {
             for (int k2 = 0; k2 < num_elem_interp_pts_per_node; ++k2) {
             for (int k3 = 0; k3 < num_elem_interp_pts_per_node; ++k3) {
@@ -858,9 +1139,6 @@ void SolvationEnergyCompute::downward_pass()
                              * (elem_q_dx_ptr[particle_start + i] * pot_temp_dx
                               + elem_q_dy_ptr[particle_start + i] * pot_temp_dy
                               + elem_q_dz_ptr[particle_start + i] * pot_temp_dz);
-#ifdef OPENACC_ENABLED
-            #pragma acc atomic update
-#endif
             solv_eng_ptr[0] += pot_temp_1 + pot_temp_2;
         }
     } //end loop over nodes
