@@ -9,6 +9,10 @@
 #include "timer.h"
 #include "particles.h"
 
+#ifdef USE_CUDA_CC
+#include "cuda_state.h"
+#endif
+
 #ifdef TABIPB_APBS
     #include "generic/valist.h"
 #endif
@@ -24,6 +28,20 @@ private:
     std::vector<double> charge_;
     std::vector<double> radius_;
 
+#ifdef USE_CUDA_CC
+    class DeviceBuffers {
+        friend class Molecule;
+    private:
+        double* particles_x_dev = nullptr;
+        double* particles_y_dev = nullptr;
+        double* particles_z_dev = nullptr;
+        double* charge_dev = nullptr;
+        std::size_t num_particles = 0;
+    };
+
+    mutable DeviceBuffers device_buffers_;
+    mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+#endif
 
 public:
     Molecule(struct Params&, struct Timers_Molecule&);

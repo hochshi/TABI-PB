@@ -5,6 +5,10 @@
 #include "interp_pts.h"
 #include "tree_compute.h"
 
+#ifdef USE_CUDA_CC
+#include "cuda_state.h"
+#endif
+
 //struct Timers_SourceTermCompute;
 //struct Timers;
 
@@ -51,6 +55,36 @@ private:
     mutable std::vector<int> exact_idx_y_;
     mutable std::vector<int> exact_idx_z_;
     mutable std::vector<double> denominator_;
+
+#ifdef USE_CUDA_CC
+    class DeviceBuffers {
+        friend class SourceTermCompute;
+    private:
+        double* q_dev = nullptr;
+        double* p_dev = nullptr;
+        double* p_dx_dev = nullptr;
+        double* p_dy_dev = nullptr;
+        double* p_dz_dev = nullptr;
+        double* mol_weights_dev = nullptr;
+        double* elem_weights_dev = nullptr;
+        int* exact_idx_x_dev = nullptr;
+        int* exact_idx_y_dev = nullptr;
+        int* exact_idx_z_dev = nullptr;
+        double* denominator_dev = nullptr;
+
+        std::size_t q_num = 0;
+        std::size_t p_num = 0;
+        std::size_t p_dx_num = 0;
+        std::size_t p_dy_num = 0;
+        std::size_t p_dz_num = 0;
+        std::size_t mol_weights_num = 0;
+        std::size_t elem_weights_num = 0;
+        std::size_t scratch_num = 0;
+    };
+
+    mutable DeviceBuffers device_buffers_;
+    mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+#endif
 
     
     
