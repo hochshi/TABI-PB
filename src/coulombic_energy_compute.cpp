@@ -1,9 +1,26 @@
 #include <cmath>
 // #include <algorithm>
 #include <vector>
+#include <cstdlib>
+#include <cstring>
 
 // #include "constants.h"
 #include "coulombic_energy_compute.h"
+
+#ifdef OPENACC_ENABLED
+#include <openacc.h>
+#endif
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#include <cuda.h>
+extern "C" {
+    CUcontext acc_get_cuda_context(void) __attribute__((weak));
+}
+#include "coulombic_energy_cuda.h"
+#endif
+
+namespace {
+constexpr int kCoulombicAsync = 9;
+}
 
 
 CoulombicEnergyCompute::CoulombicEnergyCompute(const class Molecule& molecule,
@@ -25,6 +42,29 @@ CoulombicEnergyCompute::CoulombicEnergyCompute(const class Molecule& molecule,
     
     mol_interp_charge_.assign(num_mol_charges_, 0.);
     mol_interp_potential_.assign(num_mol_potentials_, 0.);
+
+    max_mol_particles_per_node_ = 0;
+    for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
+        auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+        std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+        if (num_particles > max_mol_particles_per_node_) {
+            max_mol_particles_per_node_ = num_particles;
+        }
+    }
+
+    mol_weights_.resize(num_mol_interp_pts_per_node_);
+    for (int i = 0; i < num_mol_interp_pts_per_node_; ++i) {
+        double w = (i % 2 == 0) ? 1.0 : -1.0;
+        if (i == 0 || i == num_mol_interp_pts_per_node_ - 1) {
+            w *= 0.5;
+        }
+        mol_weights_[i] = w;
+    }
+
+    exact_idx_x_.assign(max_mol_particles_per_node_, -1);
+    exact_idx_y_.assign(max_mol_particles_per_node_, -1);
+    exact_idx_z_.assign(max_mol_particles_per_node_, -1);
+    denominator_.assign(max_mol_particles_per_node_, 0.0);
 
     /* Coulombic energy */
 
@@ -74,11 +114,46 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
 
     double* __restrict coul_eng_ptr = coul_eng_vec_.data();
 
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                                       coul_eng_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PP");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_atoms = molecule_.num();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)coul_eng_ptr, coul_eng_vec_.size() * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, coul_eng_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                coulombic_pp_cuda(
+                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                    target_node_begin,
+                    target_node_end,
+                    source_node_begin,
+                    source_node_end,
+                    eps_solute_,
+                    coul_eng_ptr,
+                    stream);
+            }
+            return;
+        }
+    }
 #endif
+
     for (std::size_t j = target_node_begin; j < target_node_end; ++j) {
         
         double target_x = mol_x_ptr[j];
@@ -88,9 +163,6 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
         
         double pot_temp = 0.;
         
-#ifdef OPENACC_ENABLED
-        #pragma acc loop reduction(+:pot_temp)
-#endif
         for (std::size_t k = source_node_begin; k < source_node_end; ++k) {
 
             double dx = target_x - mol_x_ptr[k];
@@ -101,9 +173,7 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
             if (r > 0) pot_temp += target_q * mol_q_ptr[k] / eps_solute_ / std::sqrt(r);
         }
 
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         coul_eng_ptr[0] += pot_temp;
@@ -148,12 +218,57 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
     double* __restrict coul_eng_ptr = coul_eng_vec_.data();
     
     
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop async(stream_id) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                      mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                                      mol_clusters_q_ptr, coul_eng_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PC");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
+        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
+        std::size_t num_atoms = molecule_.num();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)coul_eng_ptr, coul_eng_vec_.size() * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                             mol_clusters_q_ptr, coul_eng_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                coulombic_pc_cuda(
+                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                    mol_clusters_q_ptr,
+                    source_node_idx,
+                    num_mol_interp_pts_per_node_,
+                    num_mol_interp_charges_per_node_,
+                    target_node_begin,
+                    target_node_end,
+                    eps_solute_,
+                    coul_eng_ptr,
+                    stream);
+            }
+            return;
+        }
+    }
 #endif
+
     for (std::size_t j = target_node_begin; j < target_node_end; ++j) {
 
         double target_x = mol_x_ptr[j];
@@ -163,9 +278,6 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
         
         double pot_temp = 0.;
         
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) reduction(+:pot_temp)
-#endif
         for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
         for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
         for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
@@ -185,9 +297,7 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
         
         pot_temp *= target_q;
 
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         coul_eng_ptr[0] += pot_temp;
@@ -229,11 +339,55 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
 
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, mol_clusters_p_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CP");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * target_tree_.num_nodes();
+        std::size_t num_mol_interp_potentials = mol_interp_potential_.size();
+        std::size_t num_atoms = molecule_.num();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_p_ptr, num_mol_interp_potentials * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            #pragma acc host_data use_device(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                             mol_clusters_p_ptr, mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                coulombic_cp_cuda(
+                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                    mol_clusters_p_ptr,
+                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                    target_node_idx,
+                    num_mol_interp_pts_per_node_,
+                    num_mol_interp_potentials_per_node_,
+                    source_node_begin,
+                    source_node_end,
+                    eps_solute_,
+                    stream);
+            }
+            return;
+        }
+    }
 #endif
+
+
     for (int j1 = 0; j1 < num_mol_interp_pts_per_node; ++j1) {
     for (int j2 = 0; j2 < num_mol_interp_pts_per_node; ++j2) {
     for (int j3 = 0; j3 < num_mol_interp_pts_per_node; ++j3) {
@@ -248,9 +402,6 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
         
         double pot_temp = 0.;
     
-#ifdef OPENACC_ENABLED
-        #pragma acc loop reduction(+:pot_temp)
-#endif
         for (std::size_t k = source_node_begin; k < source_node_end; ++k) {
 
             double dx = target_x - mol_x_ptr[k];
@@ -260,9 +411,7 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
             pot_temp += mol_q_ptr[k] / eps_solute_ / std::sqrt(dx*dx + dy*dy + dz*dz);;
         }
     
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         mol_clusters_p_ptr[jj] += pot_temp;
@@ -304,12 +453,51 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
     
     const double* __restrict mol_clusters_q_ptr     = mol_interp_charge_.data();
 
-
-#ifdef OPENACC_ENABLED
-    int stream_id = std::rand() % 3;
-    #pragma acc parallel loop collapse(3) async(stream_id) present(mol_clusters_x_ptr, mol_clusters_y_ptr, \
-                    mol_clusters_z_ptr, mol_clusters_q_ptr,  mol_clusters_p_ptr)
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CC");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
+        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
+        std::size_t num_mol_interp_potentials = mol_interp_potential_.size();
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_p_ptr, num_mol_interp_potentials * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            #pragma acc host_data use_device(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                             mol_clusters_q_ptr, mol_clusters_p_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                coulombic_cc_cuda(
+                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                    mol_clusters_q_ptr, mol_clusters_p_ptr,
+                    target_node_idx,
+                    source_node_idx,
+                    num_mol_interp_pts_per_node_,
+                    num_mol_interp_charges_per_node_,
+                    num_mol_interp_potentials_per_node_,
+                    eps_solute_,
+                    stream);
+            }
+            return;
+        }
+    }
 #endif
+
+
     for (int j1 = 0; j1 < num_mol_interp_pts_per_node; j1++) {
     for (int j2 = 0; j2 < num_mol_interp_pts_per_node; j2++) {
     for (int j3 = 0; j3 < num_mol_interp_pts_per_node; j3++) {
@@ -324,9 +512,6 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
         
         double pot_temp = 0.;
     
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) reduction(+:pot_temp)
-#endif
         for (int k1 = 0; k1 < num_mol_interp_pts_per_node; k1++) {
         for (int k2 = 0; k2 < num_mol_interp_pts_per_node; k2++) {
         for (int k3 = 0; k3 < num_mol_interp_pts_per_node; k3++) {
@@ -344,9 +529,7 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
         }
         }
     
-#ifdef OPENACC_ENABLED
-        #pragma acc atomic update
-#elif  OPENMP_ENABLED
+#ifdef OPENMP_ENABLED
         #pragma omp atomic update
 #endif
         mol_clusters_p_ptr[jj] += pot_temp;
@@ -378,18 +561,79 @@ void CoulombicEnergyCompute::upward_pass()
     double*       __restrict mol_clusters_q_ptr = mol_interp_charge_.data();
     
         
-    std::vector<double> weights (num_mol_interp_pts_per_node);
-    double* weights_ptr = weights.data();
-    int weights_num = weights.size();
-    
-    for (int i = 0; i < weights_num; ++i) {
-        weights[i] = ((i % 2 == 0)? 1 : -1);
-        if (i == 0 || i == weights_num-1) weights[i] = ((i % 2 == 0)? 1 : -1) * 0.5;
-    }
+    double* weights_ptr = mol_weights_.data();
+    int weights_num = mol_weights_.size();
+    int* exact_idx_x_ptr = exact_idx_x_.data();
+    int* exact_idx_y_ptr = exact_idx_y_.data();
+    int* exact_idx_z_ptr = exact_idx_z_.data();
+    double* denominator_ptr = denominator_.data();
 
-    
-#ifdef OPENACC_ENABLED
-    #pragma acc enter data copyin(weights_ptr[0:weights_num])
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_UP");
+    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
+    if (use_cuda) {
+        std::size_t num_atoms = molecule_.num();
+        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
+        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
+        std::size_t scratch_num = max_mol_particles_per_node_;
+        bool present_ok = true;
+        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)weights_ptr, mol_weights_.size() * sizeof(double));
+        present_ok = present_ok && acc_is_present((void*)exact_idx_x_ptr, scratch_num * sizeof(int));
+        present_ok = present_ok && acc_is_present((void*)exact_idx_y_ptr, scratch_num * sizeof(int));
+        present_ok = present_ok && acc_is_present((void*)exact_idx_z_ptr, scratch_num * sizeof(int));
+        present_ok = present_ok && acc_is_present((void*)denominator_ptr, scratch_num * sizeof(double));
+        if (present_ok) {
+            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
+                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
+                                             mol_clusters_q_ptr, weights_ptr, \
+                                             exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr, \
+                                             denominator_ptr)
+            {
+                CUcontext acc_ctx = nullptr;
+                if (acc_get_cuda_context) {
+                    acc_ctx = acc_get_cuda_context();
+                }
+                if (acc_ctx == nullptr) {
+                    cuCtxGetCurrent(&acc_ctx);
+                }
+                if (acc_ctx != nullptr) {
+                    cuCtxSetCurrent(acc_ctx);
+                }
+                for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
+                    auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+                    std::size_t particle_start = particle_idxs[0];
+                    std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+                    if (num_particles == 0) {
+                        continue;
+                    }
+                    coulombic_up_cuda(
+                        mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                        mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
+                        mol_clusters_q_ptr,
+                        weights_ptr,
+                        exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr,
+                        denominator_ptr,
+                        node_idx,
+                        num_mol_interp_pts_per_node_,
+                        num_mol_interp_charges_per_node_,
+                        particle_start,
+                        num_particles,
+                        stream);
+                }
+            }
+            #pragma acc wait(kCoulombicAsync)
+            return;
+        }
+    }
 #endif
     
     for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
@@ -402,37 +646,14 @@ void CoulombicEnergyCompute::upward_pass()
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles  = particle_idxs[1] - particle_idxs[0];
         
-        std::vector<int> exact_idx_x(num_particles);
-        std::vector<int> exact_idx_y(num_particles);
-        std::vector<int> exact_idx_z(num_particles);
-        std::vector<double> denominator(num_particles);
-        
-        int* exact_idx_x_ptr = exact_idx_x.data();
-        int* exact_idx_y_ptr = exact_idx_y.data();
-        int* exact_idx_z_ptr = exact_idx_z.data();
-        double* denominator_ptr = denominator.data();
-        
-#ifdef OPENACC_ENABLED
-#pragma acc kernels present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                            mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                            mol_clusters_q_ptr, weights_ptr) \
-                  create(exact_idx_x_ptr[0:num_particles], exact_idx_y_ptr[0:num_particles], \
-                         exact_idx_z_ptr[0:num_particles], denominator_ptr[0:num_particles])
-#endif
         {
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop vector(32) independent
-#endif
         for (std::size_t i = 0; i < num_particles; ++i) {
             exact_idx_x_ptr[i] = -1;
             exact_idx_y_ptr[i] = -1;
             exact_idx_z_ptr[i] = -1;
         }
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop independent
-#endif
         for (std::size_t i = 0; i < num_particles; ++i) {
         
             double denominator_x = 0.;
@@ -446,9 +667,6 @@ void CoulombicEnergyCompute::upward_pass()
 
             // because there's a reduction over exact_idx[i], this loop carries a
             // backward dependence and won't actually parallelize
-#ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:denominator_x,denominator_y,denominator_z) reduction(max:ex,ey,ez)
-#endif
             for (int j = 0; j < num_mol_interp_pts_per_node; ++j) {
             
                 double dist_x = xx - mol_clusters_x_ptr[node_interp_pts_start + j];
@@ -478,9 +696,6 @@ void CoulombicEnergyCompute::upward_pass()
             if (exact_idx_z_ptr[i] == -1) denominator_ptr[i] /= denominator_z;
         }
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) independent
-#endif
         for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
         for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
         for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
@@ -500,9 +715,6 @@ void CoulombicEnergyCompute::upward_pass()
             
             double q_temp = 0.;
             
-#ifdef OPENACC_ENABLED
-            #pragma acc loop reduction(+:q_temp)
-#endif
             for (std::size_t i = 0; i < num_particles; i++) {  // loop over source points
             
                 double dist_x = mol_x_ptr[particle_start + i] - cx;
@@ -541,10 +753,6 @@ void CoulombicEnergyCompute::upward_pass()
         
         } // end parallel region
     } // end loop over nodes
-#ifdef OPENACC_ENABLED
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
-#endif
-
 //    timers_.upward_pass.stop();
 }
 
@@ -710,9 +918,20 @@ void CoulombicEnergyCompute::copyin_clusters_to_device() const
 
     const double* coul_eng_ptr = coul_eng_vec_.data();
     std::size_t coul_eng_num   = coul_eng_vec_.size();
+
+    const double* weights_ptr = mol_weights_.data();
+    std::size_t weights_num   = mol_weights_.size();
+    int* exact_idx_x_ptr      = exact_idx_x_.data();
+    int* exact_idx_y_ptr      = exact_idx_y_.data();
+    int* exact_idx_z_ptr      = exact_idx_z_.data();
+    double* denominator_ptr   = denominator_.data();
+    std::size_t scratch_num   = max_mol_particles_per_node_;
     
     #pragma acc enter data copyin(q_ptr[0:q_num], p_ptr[0:p_num])
     #pragma acc enter data copyin(coul_eng_ptr[0:coul_eng_num])
+    #pragma acc enter data copyin(weights_ptr[0:weights_num])
+    #pragma acc enter data create(exact_idx_x_ptr[0:scratch_num], exact_idx_y_ptr[0:scratch_num], \
+                                  exact_idx_z_ptr[0:scratch_num], denominator_ptr[0:scratch_num])
 #endif
 
 //    timers_.copyin_clusters_to_device.stop();
@@ -733,8 +952,19 @@ void CoulombicEnergyCompute::delete_clusters_from_device() const
     const double* coul_eng_ptr = coul_eng_vec_.data();
     std::size_t coul_eng_num   = coul_eng_vec_.size();
 
+    const double* weights_ptr = mol_weights_.data();
+    std::size_t weights_num   = mol_weights_.size();
+    int* exact_idx_x_ptr      = exact_idx_x_.data();
+    int* exact_idx_y_ptr      = exact_idx_y_.data();
+    int* exact_idx_z_ptr      = exact_idx_z_.data();
+    double* denominator_ptr   = denominator_.data();
+    std::size_t scratch_num   = max_mol_particles_per_node_;
+
     #pragma acc exit data delete(q_ptr[0:q_num], p_ptr[0:p_num])
     #pragma acc exit data copyout(coul_eng_ptr[0:coul_eng_num])
+    #pragma acc exit data delete(weights_ptr[0:weights_num], \
+                                 exact_idx_x_ptr[0:scratch_num], exact_idx_y_ptr[0:scratch_num], \
+                                 exact_idx_z_ptr[0:scratch_num], denominator_ptr[0:scratch_num])
 #endif
 
 //    timers_.delete_clusters_from_device.stop();

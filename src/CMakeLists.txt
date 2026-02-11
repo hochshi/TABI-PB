@@ -17,11 +17,16 @@ add_executable(tabipb main.cpp
         tabipb_timers.h timer.h constants.h)
 
 if (ENABLE_CUDA_CC)
-    target_sources(tabipb PRIVATE cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h source_term_cuda.cu source_term_cuda.h be_cuda.cu be_cuda.h elements_cuda.cu elements_cuda.h down_cuda.cu down_cuda.h pc_cuda.cu pc_cuda.h pp_cuda.cu pp_cuda.h pppc_cuda.cu pppc_cuda.h gmres_cuda.cu gmres_cuda.h precondition_cuda.cu precondition_cuda.h)
+    target_sources(tabipb PRIVATE cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h source_term_cuda.cu source_term_cuda.h coulombic_energy_cuda.cu coulombic_energy_cuda.h be_cuda.cu be_cuda.h elements_cuda.cu elements_cuda.h down_cuda.cu down_cuda.h pc_cuda.cu pc_cuda.h pp_cuda.cu pp_cuda.h pppc_cuda.cu pppc_cuda.h gmres_cuda.cu gmres_cuda.h precondition_cuda.cu precondition_cuda.h)
     target_compile_definitions(tabipb PRIVATE USE_CUDA_CC)
+    if (CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+        # Avoid forwarding NVHPC-specific host flags (e.g. -gpu=ccXX) into nvcc.
+        set_target_properties(tabipb PROPERTIES CUDA_PROPAGATE_HOST_FLAGS OFF)
+    endif ()
     set_source_files_properties(cc_cuda.cu PROPERTIES CUDA_STANDARD 11)
     set_source_files_properties(up_cuda.cu PROPERTIES CUDA_STANDARD 11)
     set_source_files_properties(source_term_cuda.cu PROPERTIES CUDA_STANDARD 11)
+    set_source_files_properties(coulombic_energy_cuda.cu PROPERTIES CUDA_STANDARD 11)
     set_source_files_properties(be_cuda.cu PROPERTIES CUDA_STANDARD 11)
     set_source_files_properties(elements_cuda.cu PROPERTIES CUDA_STANDARD 11)
     set_source_files_properties(down_cuda.cu PROPERTIES CUDA_STANDARD 11)
@@ -59,7 +64,10 @@ if (ENABLE_OPENACC)
             endforeach ()
             list(JOIN _tabipb_gpu_list "," _tabipb_gpu_list_str)
             if (_tabipb_gpu_list_str)
-                target_compile_options(tabipb PRIVATE "-gpu=${_tabipb_gpu_list_str}")
+                target_compile_options(tabipb PRIVATE
+                    $<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
+                    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
+                )
             endif ()
         endif ()
     endif ()
@@ -110,7 +118,7 @@ if (ENABLE_TABIPB_APBS)
         tabipb_wrap/molecule_apbs_ctor.cpp)
 
     if (ENABLE_CUDA_CC)
-        list(APPEND LIBFILES cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h source_term_cuda.cu source_term_cuda.h be_cuda.cu be_cuda.h elements_cuda.cu elements_cuda.h down_cuda.cu down_cuda.h pc_cuda.cu pc_cuda.h pp_cuda.cu pp_cuda.h pppc_cuda.cu pppc_cuda.h gmres_cuda.cu gmres_cuda.h precondition_cuda.cu precondition_cuda.h)
+        list(APPEND LIBFILES cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h source_term_cuda.cu source_term_cuda.h coulombic_energy_cuda.cu coulombic_energy_cuda.h be_cuda.cu be_cuda.h elements_cuda.cu elements_cuda.h down_cuda.cu down_cuda.h pc_cuda.cu pc_cuda.h pp_cuda.cu pp_cuda.h pppc_cuda.cu pppc_cuda.h gmres_cuda.cu gmres_cuda.h precondition_cuda.cu precondition_cuda.h)
     endif ()
   
     set(TABIPB_LIBNAME TABIPBlib)
@@ -123,9 +131,14 @@ if (ENABLE_TABIPB_APBS)
 
     if (ENABLE_CUDA_CC)
         target_compile_definitions(${TABIPB_LIBNAME} PRIVATE USE_CUDA_CC)
+        if (CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+            # Avoid forwarding NVHPC-specific host flags (e.g. -gpu=ccXX) into nvcc.
+            set_target_properties(${TABIPB_LIBNAME} PROPERTIES CUDA_PROPAGATE_HOST_FLAGS OFF)
+        endif ()
         set_source_files_properties(cc_cuda.cu PROPERTIES CUDA_STANDARD 11)
         set_source_files_properties(up_cuda.cu PROPERTIES CUDA_STANDARD 11)
         set_source_files_properties(source_term_cuda.cu PROPERTIES CUDA_STANDARD 11)
+        set_source_files_properties(coulombic_energy_cuda.cu PROPERTIES CUDA_STANDARD 11)
         set_source_files_properties(be_cuda.cu PROPERTIES CUDA_STANDARD 11)
         set_source_files_properties(elements_cuda.cu PROPERTIES CUDA_STANDARD 11)
         set_source_files_properties(down_cuda.cu PROPERTIES CUDA_STANDARD 11)
@@ -141,7 +154,10 @@ if (ENABLE_TABIPB_APBS)
         target_link_libraries(${TABIPB_LIBNAME} PRIVATE OpenACC::OpenACC_CXX -acc)
         target_compile_definitions(${TABIPB_LIBNAME} PRIVATE OPENACC_ENABLED)
         if (CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
-            target_compile_options(${TABIPB_LIBNAME} PRIVATE -Minfo=accel)
+            target_compile_options(${TABIPB_LIBNAME} PRIVATE
+                $<$<COMPILE_LANG_AND_ID:C,NVHPC>:-Minfo=accel>
+                $<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-Minfo=accel>
+            )
             if (CMAKE_CUDA_ARCHITECTURES)
                 set(_tabipb_gpu_list "")
                 foreach(_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
@@ -152,9 +168,12 @@ if (ENABLE_TABIPB_APBS)
                     endif ()
                 endforeach ()
                 list(JOIN _tabipb_gpu_list "," _tabipb_gpu_list_str)
-                if (_tabipb_gpu_list_str)
-                    target_compile_options(${TABIPB_LIBNAME} PRIVATE "-gpu=${_tabipb_gpu_list_str}")
-                endif ()
+            if (_tabipb_gpu_list_str)
+                target_compile_options(${TABIPB_LIBNAME} PRIVATE
+                    $<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
+                    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
+                )
+            endif ()
             endif ()
         endif ()
     endif ()

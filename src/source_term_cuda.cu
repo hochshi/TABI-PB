@@ -206,6 +206,89 @@ __global__ void source_term_cp_kernel(
     elem_clusters_p_dz[jj] += pot_temp_dz;
 }
 
+__global__ void source_term_cc_kernel(
+    const double* __restrict elem_clusters_x,
+    const double* __restrict elem_clusters_y,
+    const double* __restrict elem_clusters_z,
+    double* __restrict elem_clusters_p,
+    double* __restrict elem_clusters_p_dx,
+    double* __restrict elem_clusters_p_dy,
+    double* __restrict elem_clusters_p_dz,
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    const double* __restrict mol_clusters_q,
+    std::size_t target_node_idx,
+    std::size_t source_node_idx,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double one_over_4pi_eps_solute)
+{
+    std::size_t t = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (t >= static_cast<std::size_t>(num_elem_interp_potentials_per_node)) return;
+
+    std::size_t target_cluster_interp_pts_begin =
+        target_node_idx * static_cast<std::size_t>(num_elem_interp_pts_per_node);
+    std::size_t target_cluster_interp_potentials_begin =
+        target_node_idx * static_cast<std::size_t>(num_elem_interp_potentials_per_node);
+
+    int p = num_elem_interp_pts_per_node;
+    std::size_t j1 = t / static_cast<std::size_t>(p * p);
+    std::size_t j2 = (t / static_cast<std::size_t>(p)) % static_cast<std::size_t>(p);
+    std::size_t j3 = t % static_cast<std::size_t>(p);
+
+    std::size_t jj = target_cluster_interp_potentials_begin + t;
+
+    double target_x = elem_clusters_x[target_cluster_interp_pts_begin + j1];
+    double target_y = elem_clusters_y[target_cluster_interp_pts_begin + j2];
+    double target_z = elem_clusters_z[target_cluster_interp_pts_begin + j3];
+
+    std::size_t source_cluster_interp_pts_begin =
+        source_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+    std::size_t source_cluster_interp_charges_begin =
+        source_node_idx * static_cast<std::size_t>(num_mol_interp_charges_per_node);
+
+    double pot_temp_1  = 0.0;
+    double pot_temp_dx = 0.0;
+    double pot_temp_dy = 0.0;
+    double pot_temp_dz = 0.0;
+
+    for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
+        double sx = mol_clusters_x[source_cluster_interp_pts_begin + static_cast<std::size_t>(k1)];
+        for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
+            double sy = mol_clusters_y[source_cluster_interp_pts_begin + static_cast<std::size_t>(k2)];
+            for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
+                double sz = mol_clusters_z[source_cluster_interp_pts_begin + static_cast<std::size_t>(k3)];
+                std::size_t kk = source_cluster_interp_charges_begin
+                               + static_cast<std::size_t>(k1 * num_mol_interp_pts_per_node * num_mol_interp_pts_per_node)
+                               + static_cast<std::size_t>(k2 * num_mol_interp_pts_per_node + k3);
+
+                double dx = sx - target_x;
+                double dy = sy - target_y;
+                double dz = sz - target_z;
+
+                double r2 = dx * dx + dy * dy + dz * dz;
+                double rinv = 1.0 / std::sqrt(r2);
+                double G0 = one_over_4pi_eps_solute * rinv;
+                double Gn = G0 * rinv * rinv;
+
+                double q = mol_clusters_q[kk];
+                pot_temp_1  += G0 * q;
+                pot_temp_dx += Gn * q * dx;
+                pot_temp_dy += Gn * q * dy;
+                pot_temp_dz += Gn * q * dz;
+            }
+        }
+    }
+
+    elem_clusters_p[jj] += pot_temp_1;
+    elem_clusters_p_dx[jj] += pot_temp_dx;
+    elem_clusters_p_dy[jj] += pot_temp_dy;
+    elem_clusters_p_dz[jj] += pot_temp_dz;
+}
+
 __global__ void source_term_down_kernel(
     const double* __restrict elem_x,
     const double* __restrict elem_y,
@@ -319,6 +402,139 @@ __global__ void source_term_down_kernel(
 
     source_term[elem_idx] += pot_temp_1;
     source_term[elem_idx + source_term_offset] += pot_temp_2;
+}
+
+__global__ void source_term_up_denom_kernel(
+    const double* __restrict mol_x,
+    const double* __restrict mol_y,
+    const double* __restrict mol_z,
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    const double* __restrict weights,
+    std::size_t node_interp_pts_start,
+    std::size_t particle_start,
+    std::size_t num_particles,
+    int num_mol_interp_pts_per_node,
+    int* __restrict exact_idx_x,
+    int* __restrict exact_idx_y,
+    int* __restrict exact_idx_z,
+    double* __restrict denominator)
+{
+    std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= num_particles) return;
+
+    double denominator_x = 0.0;
+    double denominator_y = 0.0;
+    double denominator_z = 0.0;
+    int ex = -1;
+    int ey = -1;
+    int ez = -1;
+
+    double xx = mol_x[particle_start + i];
+    double yy = mol_y[particle_start + i];
+    double zz = mol_z[particle_start + i];
+
+    for (int j = 0; j < num_mol_interp_pts_per_node; ++j) {
+        double dist_x = xx - mol_clusters_x[node_interp_pts_start + static_cast<std::size_t>(j)];
+        double dist_y = yy - mol_clusters_y[node_interp_pts_start + static_cast<std::size_t>(j)];
+        double dist_z = zz - mol_clusters_z[node_interp_pts_start + static_cast<std::size_t>(j)];
+
+        denominator_x += weights[j] / dist_x;
+        denominator_y += weights[j] / dist_y;
+        denominator_z += weights[j] / dist_z;
+
+        const int cx = (fabs(dist_x) < DBL_MIN) ? j : -1;
+        const int cy = (fabs(dist_y) < DBL_MIN) ? j : -1;
+        const int cz = (fabs(dist_z) < DBL_MIN) ? j : -1;
+
+        ex = (ex > cx) ? ex : cx;
+        ey = (ey > cy) ? ey : cy;
+        ez = (ez > cz) ? ez : cz;
+    }
+
+    exact_idx_x[i] = ex;
+    exact_idx_y[i] = ey;
+    exact_idx_z[i] = ez;
+
+    double denom = 1.0;
+    if (ex == -1) denom /= denominator_x;
+    if (ey == -1) denom /= denominator_y;
+    if (ez == -1) denom /= denominator_z;
+    denominator[i] = denom;
+}
+
+__global__ void source_term_up_charges_kernel(
+    const double* __restrict mol_x,
+    const double* __restrict mol_y,
+    const double* __restrict mol_z,
+    const double* __restrict mol_q,
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    double* __restrict mol_clusters_q,
+    const double* __restrict weights,
+    const int* __restrict exact_idx_x,
+    const int* __restrict exact_idx_y,
+    const int* __restrict exact_idx_z,
+    const double* __restrict denominator,
+    std::size_t node_interp_pts_start,
+    std::size_t node_charges_start,
+    std::size_t particle_start,
+    std::size_t num_particles,
+    int num_mol_interp_pts_per_node)
+{
+    std::size_t t = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    std::size_t num_charges = static_cast<std::size_t>(num_mol_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_mol_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_mol_interp_pts_per_node);
+    if (t >= num_charges) return;
+
+    int p = num_mol_interp_pts_per_node;
+    std::size_t k1 = t / static_cast<std::size_t>(p * p);
+    std::size_t k2 = (t / static_cast<std::size_t>(p)) % static_cast<std::size_t>(p);
+    std::size_t k3 = t % static_cast<std::size_t>(p);
+
+    std::size_t kk = node_charges_start + t;
+
+    double cx = mol_clusters_x[node_interp_pts_start + k1];
+    double w1 = weights[static_cast<int>(k1)];
+    double cy = mol_clusters_y[node_interp_pts_start + k2];
+    double w2 = weights[static_cast<int>(k2)];
+    double cz = mol_clusters_z[node_interp_pts_start + k3];
+    double w3 = weights[static_cast<int>(k3)];
+
+    double q_temp = 0.0;
+
+    for (std::size_t i = 0; i < num_particles; ++i) {
+        double dist_x = mol_x[particle_start + i] - cx;
+        double dist_y = mol_y[particle_start + i] - cy;
+        double dist_z = mol_z[particle_start + i] - cz;
+
+        double numerator = 1.0;
+
+        if (exact_idx_x[i] == -1) {
+            numerator *= w1 / dist_x;
+        } else {
+            if (exact_idx_x[i] != static_cast<int>(k1)) numerator = 0.0;
+        }
+
+        if (exact_idx_y[i] == -1) {
+            numerator *= w2 / dist_y;
+        } else {
+            if (exact_idx_y[i] != static_cast<int>(k2)) numerator = 0.0;
+        }
+
+        if (exact_idx_z[i] == -1) {
+            numerator *= w3 / dist_z;
+        } else {
+            if (exact_idx_z[i] != static_cast<int>(k3)) numerator = 0.0;
+        }
+
+        q_temp += mol_q[particle_start + i] * numerator * denominator[i];
+    }
+
+    mol_clusters_q[kk] += q_temp;
 }
 
 } // namespace
@@ -457,6 +673,52 @@ extern "C" void source_term_cp_cuda(
     // Stream is synchronized by OpenACC wait after the interaction loop.
 }
 
+extern "C" void source_term_cc_cuda(
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    std::size_t target_node_idx,
+    std::size_t source_node_idx,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double one_over_4pi_eps_solute,
+    void* stream)
+{
+    if (num_elem_interp_potentials_per_node <= 0) return;
+    if (num_mol_interp_pts_per_node <= 0) return;
+
+    int threads = 128;
+    int blocks = (num_elem_interp_potentials_per_node + threads - 1) / threads;
+    cudaStream_t cuda_stream = stream ? static_cast<cudaStream_t>(stream) : 0;
+
+    source_term_cc_kernel<<<blocks, threads, 0, cuda_stream>>>(
+        elem_clusters_x, elem_clusters_y, elem_clusters_z,
+        elem_clusters_p, elem_clusters_p_dx, elem_clusters_p_dy, elem_clusters_p_dz,
+        mol_clusters_x, mol_clusters_y, mol_clusters_z, mol_clusters_q,
+        target_node_idx, source_node_idx,
+        num_elem_interp_pts_per_node,
+        num_elem_interp_potentials_per_node,
+        num_mol_interp_pts_per_node,
+        num_mol_interp_charges_per_node,
+        one_over_4pi_eps_solute);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "source_term_cc_cuda kernel launch failed: %s\n", cudaGetErrorString(err));
+    }
+    // Stream is synchronized by OpenACC wait after the interaction loop.
+}
+
 extern "C" void source_term_down_cuda(
     const double* elem_x,
     const double* elem_y,
@@ -506,4 +768,75 @@ extern "C" void source_term_down_cuda(
         std::fprintf(stderr, "source_term_down_cuda kernel launch failed: %s\n", cudaGetErrorString(err));
     }
     // Stream is synchronized by OpenACC wait after downward_pass finishes.
+}
+
+extern "C" void source_term_up_cuda(
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    double* mol_clusters_q,
+    const double* weights,
+    int* exact_idx_x,
+    int* exact_idx_y,
+    int* exact_idx_z,
+    double* denominator,
+    std::size_t node_idx,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    std::size_t particle_start,
+    std::size_t num_particles,
+    void* stream)
+{
+    if (num_particles == 0) return;
+    if (num_mol_interp_pts_per_node <= 0) return;
+
+    cudaStream_t cuda_stream = stream ? static_cast<cudaStream_t>(stream) : 0;
+
+    int threads = 128;
+    int blocks_particles = static_cast<int>((num_particles + threads - 1) / threads);
+
+    std::size_t node_interp_pts_start =
+        node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+    std::size_t node_charges_start =
+        node_idx * static_cast<std::size_t>(num_mol_interp_charges_per_node);
+
+    source_term_up_denom_kernel<<<blocks_particles, threads, 0, cuda_stream>>>(
+        mol_x, mol_y, mol_z,
+        mol_clusters_x, mol_clusters_y, mol_clusters_z,
+        weights,
+        node_interp_pts_start,
+        particle_start,
+        num_particles,
+        num_mol_interp_pts_per_node,
+        exact_idx_x, exact_idx_y, exact_idx_z,
+        denominator);
+
+    std::size_t num_charges = static_cast<std::size_t>(num_mol_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_mol_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_mol_interp_pts_per_node);
+    int blocks_charges = static_cast<int>((num_charges + threads - 1) / threads);
+
+    source_term_up_charges_kernel<<<blocks_charges, threads, 0, cuda_stream>>>(
+        mol_x, mol_y, mol_z,
+        mol_q,
+        mol_clusters_x, mol_clusters_y, mol_clusters_z,
+        mol_clusters_q,
+        weights,
+        exact_idx_x, exact_idx_y, exact_idx_z,
+        denominator,
+        node_interp_pts_start,
+        node_charges_start,
+        particle_start,
+        num_particles,
+        num_mol_interp_pts_per_node);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "source_term_up_cuda kernel launch failed: %s\n", cudaGetErrorString(err));
+    }
+    // Stream is synchronized by OpenACC wait after upward_pass finishes.
 }

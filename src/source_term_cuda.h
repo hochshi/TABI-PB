@@ -65,6 +65,27 @@ void source_term_cp_cuda(
     double one_over_4pi_eps_solute,
     void* stream);
 
+void source_term_cc_cuda(
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    std::size_t target_node_idx,
+    std::size_t source_node_idx,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double one_over_4pi_eps_solute,
+    void* stream);
+
 void source_term_down_cuda(
     const double* elem_x,
     const double* elem_y,
@@ -87,6 +108,27 @@ void source_term_down_cuda(
     std::size_t num_particles,
     double* source_term,
     std::size_t source_term_offset,
+    void* stream);
+
+void source_term_up_cuda(
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    double* mol_clusters_q,
+    const double* weights,
+    int* exact_idx_x,
+    int* exact_idx_y,
+    int* exact_idx_z,
+    double* denominator,
+    std::size_t node_idx,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    std::size_t particle_start,
+    std::size_t num_particles,
     void* stream);
 
 } // extern "C"

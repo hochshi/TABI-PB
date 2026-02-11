@@ -25,9 +25,16 @@ private:
     
     int num_mol_interp_potentials_per_node_;
     std::size_t num_mol_potentials_;
-    
+
     std::vector<double> mol_interp_charge_;
     std::vector<double> mol_interp_potential_;
+
+    std::size_t max_mol_particles_per_node_;
+    std::vector<double> mol_weights_;
+    mutable std::vector<int> exact_idx_x_;
+    mutable std::vector<int> exact_idx_y_;
+    mutable std::vector<int> exact_idx_z_;
+    mutable std::vector<double> denominator_;
     
     
     /* Coulombic energy */

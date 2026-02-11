@@ -47,10 +47,10 @@ private:
     std::vector<double> mol_weights_;
     std::vector<double> elem_weights_;
 
-    std::vector<int> exact_idx_x_;
-    std::vector<int> exact_idx_y_;
-    std::vector<int> exact_idx_z_;
-    std::vector<double> denominator_;
+    mutable std::vector<int> exact_idx_x_;
+    mutable std::vector<int> exact_idx_y_;
+    mutable std::vector<int> exact_idx_z_;
+    mutable std::vector<double> denominator_;
 
     
     
