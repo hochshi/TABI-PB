@@ -3,6 +3,7 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <cstring>
 
 #ifdef PLY_ENABLED
 #include <tinyply.h>
@@ -14,6 +15,14 @@
 #include "constants.h"
 #include "output.h"
 
+#ifdef USE_CUDA_CC
+#include <cuda_runtime.h>
+#include "output_cuda.h"
+#endif
+
+#ifdef OPENACC_ENABLED
+#include <openacc.h>
+#endif
 
 Output::Output(class Molecule& mol, class Elements& elem, const struct Params& params, struct Timers_Output& timers)
     : molecule_(mol), elements_(elem), params_(params), timers_(timers), potential_offset_(elements_.num())
@@ -39,10 +48,54 @@ void Output::compute_coulombic_energy()
     const double* __restrict mol_z_ptr = molecule_.z_ptr();
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
-#ifdef OPENACC_ENABLED
-    #pragma acc parallel loop gang present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr) \
-                                   reduction(+:coulombic_energy)
-#elif OPENMP_ENABLED
+#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const bool present_ok =
+            acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            double* energy_dev = nullptr;
+            auto check = [](cudaError_t err, const char* what) {
+                if (err != cudaSuccess) {
+                    std::cerr << "[CUDA_OUTPUT] " << what << " failed: "
+                              << cudaGetErrorString(err) << "\n";
+                    std::exit(1);
+                }
+            };
+            check(cudaMalloc(&energy_dev, sizeof(double)), "cudaMalloc coulombic_energy");
+            check(cudaMemsetAsync(energy_dev, 0, sizeof(double),
+                                  reinterpret_cast<cudaStream_t>(stream)),
+                  "cudaMemsetAsync coulombic_energy");
+            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr)
+            {
+                output_coulombic_cuda(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                                      num_atoms, epsp, energy_dev, stream);
+            }
+            check(cudaMemcpyAsync(&coulombic_energy, energy_dev, sizeof(double),
+                                  cudaMemcpyDeviceToHost,
+                                  reinterpret_cast<cudaStream_t>(stream)),
+                  "cudaMemcpyAsync coulombic_energy");
+            check(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream)),
+                  "cudaStreamSynchronize coulombic_energy");
+            cudaFree(energy_dev);
+            coulombic_energy_ = coulombic_energy;
+            timers_.compute_coulombic_energy.stop();
+            return;
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_OUTPUT] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
+#endif
+#if defined(OPENMP_ENABLED)
     #pragma omp parallel for reduction(+:coulombic_energy)
 #endif
     for (std::size_t i = 0; i < num_atoms; ++i) {
@@ -51,9 +104,6 @@ void Output::compute_coulombic_energy()
         double zz = mol_z_ptr[i];
         double qq = mol_q_ptr[i];
         
-#ifdef OPENACC_ENABLED
-	#pragma acc loop vector reduction(+:coulombic_energy)
-#endif
         for (std::size_t j = i+1; j < num_atoms; ++j) {
             double dx = xx - mol_x_ptr[j];
             double dy = yy - mol_y_ptr[j];
@@ -116,17 +166,74 @@ void Output::compute_solvation_energy()
     
 #ifdef OPENACC_ENABLED
     #pragma acc enter data copyin(potential_ptr[0:potential_num])
-#pragma acc parallel loop gang present(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                      elem_x_ptr, elem_y_ptr, elem_z_ptr, \
-                                      elem_nx_ptr, elem_ny_ptr, elem_nz_ptr, \
-                                      elem_area_ptr) \
-                                   reduction(+:solvation_energy)
+#ifdef USE_CUDA_CC
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const bool present_ok =
+            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_nx_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_ny_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_nz_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
+            acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double)) &&
+            acc_is_present((void*)potential_ptr, potential_num * sizeof(double));
+        if (present_ok) {
+            acc_wait(acc_async_sync);
+            void* stream = acc_get_cuda_stream(acc_async_sync);
+            double* energy_dev = nullptr;
+            auto check = [](cudaError_t err, const char* what) {
+                if (err != cudaSuccess) {
+                    std::cerr << "[CUDA_OUTPUT] " << what << " failed: "
+                              << cudaGetErrorString(err) << "\n";
+                    std::exit(1);
+                }
+            };
+            check(cudaMalloc(&energy_dev, sizeof(double)), "cudaMalloc solvation_energy");
+            check(cudaMemsetAsync(energy_dev, 0, sizeof(double),
+                                  reinterpret_cast<cudaStream_t>(stream)),
+                  "cudaMemsetAsync solvation_energy");
+            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
+                                             elem_nx_ptr, elem_ny_ptr, elem_nz_ptr, \
+                                             elem_area_ptr, mol_x_ptr, mol_y_ptr, mol_z_ptr, \
+                                             mol_q_ptr, potential_ptr)
+            {
+                output_solvation_cuda(elem_x_ptr, elem_y_ptr, elem_z_ptr,
+                                      elem_nx_ptr, elem_ny_ptr, elem_nz_ptr,
+                                      elem_area_ptr,
+                                      mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
+                                      potential_ptr, potential_offset_,
+                                      num_elems, num_atoms,
+                                      eps, kappa,
+                                      energy_dev, stream);
+            }
+            check(cudaMemcpyAsync(&solvation_energy, energy_dev, sizeof(double),
+                                  cudaMemcpyDeviceToHost,
+                                  reinterpret_cast<cudaStream_t>(stream)),
+                  "cudaMemcpyAsync solvation_energy");
+            check(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream)),
+                  "cudaStreamSynchronize solvation_energy");
+            cudaFree(energy_dev);
+            #pragma acc exit data delete(potential_ptr[0:potential_num])
+            solvation_energy_ = solvation_energy;
+            timers_.compute_solvation_energy.stop();
+            return;
+        }
+        if (require_all) {
+            std::cerr << "[CUDA_OUTPUT] require_all set but device pointers not present. "
+                      << "Aborting to avoid OpenACC fallback.\n";
+            std::exit(1);
+        }
+    }
+#endif
 #endif
     for (std::size_t i = 0; i < num_elems; ++i) {
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop vector reduction(+:solvation_energy)
-#endif
         for (std::size_t j = 0; j < num_atoms; ++j) {
         
             double dx = elem_x_ptr[i] - mol_x_ptr[j];
