@@ -104,9 +104,40 @@ public:
                            const class InteractionList &interaction_list);
 
   void compute_charges(const double *potential);
+  Timer& compute_charges_timer();
 
   void copyin_to_device() const override;
   void delete_from_device() const override;
+
+#ifdef USE_CUDA_CC
+  struct CudaPtrs {
+    bool ready = false;
+    double* x = nullptr;
+    double* y = nullptr;
+    double* z = nullptr;
+    double* nx = nullptr;
+    double* ny = nullptr;
+    double* nz = nullptr;
+    double* area = nullptr;
+    double* source_term = nullptr;
+    double* target_q = nullptr;
+    double* target_q_dx = nullptr;
+    double* target_q_dy = nullptr;
+    double* target_q_dz = nullptr;
+    double* source_q = nullptr;
+    double* source_q_dx = nullptr;
+    double* source_q_dy = nullptr;
+    double* source_q_dz = nullptr;
+    std::size_t num = 0;
+  };
+  const CudaPtrs& cuda_ptrs() const { return cuda_ptrs_; }
+  void reset_cuda_ptrs_() const;
+#endif
+
+private:
+#ifdef USE_CUDA_CC
+  mutable CudaPtrs cuda_ptrs_;
+#endif
 };
 
 struct Timers_Elements {

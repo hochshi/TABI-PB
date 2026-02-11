@@ -8,6 +8,9 @@
 #include "elements.h"
 #include "interp_pts.h"
 #include "interaction_list.h"
+#ifdef USE_CUDA_CC
+#include <cuda_runtime.h>
+#endif
 
 struct Timers_BoundaryElement;
 
@@ -64,6 +67,70 @@ private:
     std::vector<std::uint32_t> cp_sources_u32_;
     std::vector<std::uint32_t> cc_offsets_u32_;
     std::vector<std::uint32_t> cc_sources_u32_;
+
+#ifdef USE_CUDA_CC
+    struct CudaPtrs {
+        bool ready = false;
+        double* clusters_x = nullptr;
+        double* clusters_y = nullptr;
+        double* clusters_z = nullptr;
+        double* clusters_q = nullptr;
+        double* clusters_q_dx = nullptr;
+        double* clusters_q_dy = nullptr;
+        double* clusters_q_dz = nullptr;
+        double* clusters_p = nullptr;
+        double* clusters_p_dx = nullptr;
+        double* clusters_p_dy = nullptr;
+        double* clusters_p_dz = nullptr;
+        double* elements_x = nullptr;
+        double* elements_y = nullptr;
+        double* elements_z = nullptr;
+        double* elements_nx = nullptr;
+        double* elements_ny = nullptr;
+        double* elements_nz = nullptr;
+        double* elements_area = nullptr;
+        double* targets_q = nullptr;
+        double* targets_q_dx = nullptr;
+        double* targets_q_dy = nullptr;
+        double* targets_q_dz = nullptr;
+        double* sources_q = nullptr;
+        double* sources_q_dx = nullptr;
+        double* sources_q_dy = nullptr;
+        double* sources_q_dz = nullptr;
+        double* weights = nullptr;
+        double* potential_temp = nullptr;
+        std::uint32_t* node_begin = nullptr;
+        std::uint32_t* node_end = nullptr;
+        std::uint32_t* element_node_idx = nullptr;
+        std::uint32_t* pp_offsets = nullptr;
+        std::uint32_t* pp_sources = nullptr;
+        std::uint32_t* pc_offsets = nullptr;
+        std::uint32_t* pc_sources = nullptr;
+        std::uint32_t* cp_offsets = nullptr;
+        std::uint32_t* cp_sources = nullptr;
+        std::uint32_t* cc_offsets = nullptr;
+        std::uint32_t* cc_sources = nullptr;
+        std::size_t* level_nodes = nullptr;
+        std::size_t level_nodes_num = 0;
+        std::size_t num_nodes = 0;
+    };
+    mutable CudaPtrs cuda_ptrs_;
+    struct CudaTimerSection {
+        cudaEvent_t start = nullptr;
+        cudaEvent_t stop = nullptr;
+        Timer* timer = nullptr;
+    };
+
+    struct CudaTimerQueue {
+        std::vector<CudaTimerSection> sections;
+        void begin(Timer& timer, void* stream);
+        void end(void* stream);
+        void flush();
+    };
+
+    mutable CudaTimerQueue cuda_timer_queue_;
+    void flush_cuda_timers_();
+#endif
     
     /* output */
     double solvation_energy_;
@@ -82,9 +149,19 @@ private:
     void matrix_vector(double alpha, const double* __restrict potential_old,
                        double beta,        double* __restrict potential_new,
                        bool device_ptrs = false);
+#ifdef USE_CUDA_CC
+    void matrix_vector_cuda(double alpha, const double* potential_old_dev,
+                            double beta, double* potential_new_dev,
+                            void* stream);
+    void cache_cuda_ptrs_() const;
+    void reset_cuda_ptrs_() const;
+#endif
                        
     void precondition_diagonal(double* z, double* r);
     void precondition_block(double* z, double* r);
+#ifdef USE_CUDA_CC
+    void precondition_diagonal_cuda(double* z_dev, double* r_dev, void* stream);
+#endif
     
     void particle_particle_interact(double* __restrict potential,
                               const double* __restrict potential_old,

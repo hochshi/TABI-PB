@@ -1,5 +1,7 @@
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 
 #include "interp_pts.h"
 #include "tree.h"
@@ -28,6 +30,12 @@ void InterpolationPoints::compute_all_interp_pts()
     double* __restrict clusters_x_ptr   = interp_x_.data();
     double* __restrict clusters_y_ptr   = interp_y_.data();
     double* __restrict clusters_z_ptr   = interp_z_.data();
+
+    bool require_all = false;
+#ifdef USE_CUDA_CC
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+#endif
     
     int num_interp_pts_per_node = num_interp_pts_per_node_;
     int degree = num_interp_pts_per_node - 1;
@@ -37,15 +45,34 @@ void InterpolationPoints::compute_all_interp_pts()
         auto node_bounds = tree_.node_particle_bounds(node_idx);
 
 #ifdef OPENACC_ENABLED
-        #pragma acc parallel loop present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr)
+        if (!require_all) {
+            #pragma acc parallel loop present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr)
+            for (int i = 0; i < num_interp_pts_per_node; ++i) {
+                double tt = std::cos(i * constants::PI / degree);
+                clusters_x_ptr[node_start + i] = node_bounds[0] + (tt + 1.) / 2. * (node_bounds[1] - node_bounds[0]);
+                clusters_y_ptr[node_start + i] = node_bounds[2] + (tt + 1.) / 2. * (node_bounds[3] - node_bounds[2]);
+                clusters_z_ptr[node_start + i] = node_bounds[4] + (tt + 1.) / 2. * (node_bounds[5] - node_bounds[4]);
+            }
+        } else
 #endif
-        for (int i = 0; i < num_interp_pts_per_node; ++i) {
-            double tt = std::cos(i * constants::PI / degree);
-            clusters_x_ptr[node_start + i] = node_bounds[0] + (tt + 1.) / 2. * (node_bounds[1] - node_bounds[0]);
-            clusters_y_ptr[node_start + i] = node_bounds[2] + (tt + 1.) / 2. * (node_bounds[3] - node_bounds[2]);
-            clusters_z_ptr[node_start + i] = node_bounds[4] + (tt + 1.) / 2. * (node_bounds[5] - node_bounds[4]);
+        {
+            for (int i = 0; i < num_interp_pts_per_node; ++i) {
+                double tt = std::cos(i * constants::PI / degree);
+                clusters_x_ptr[node_start + i] = node_bounds[0] + (tt + 1.) / 2. * (node_bounds[1] - node_bounds[0]);
+                clusters_y_ptr[node_start + i] = node_bounds[2] + (tt + 1.) / 2. * (node_bounds[3] - node_bounds[2]);
+                clusters_z_ptr[node_start + i] = node_bounds[4] + (tt + 1.) / 2. * (node_bounds[5] - node_bounds[4]);
+            }
         }
     }
+
+#ifdef OPENACC_ENABLED
+    if (require_all) {
+        const std::size_t num_interp_pts = num_interp_pts_;
+        #pragma acc update device(clusters_x_ptr[0:num_interp_pts], \
+                                  clusters_y_ptr[0:num_interp_pts], \
+                                  clusters_z_ptr[0:num_interp_pts])
+    }
+#endif
 
     //timers_.compute_all_interp_pts.stop();
 }

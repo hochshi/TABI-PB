@@ -423,11 +423,50 @@ void Elements::compute_source_term() {
   double *__restrict elements_source_term_ptr = source_term_.data();
 
 #ifdef OPENACC_ENABLED
-#pragma acc parallel loop gang present(                                        \
-    molecule_x_ptr, molecule_y_ptr, molecule_z_ptr, molecule_charge_ptr,       \
-    elements_x_ptr, elements_y_ptr, elements_z_ptr, elements_nx_ptr,           \
-    elements_ny_ptr, elements_nz_ptr, elements_source_term_ptr)
-#elif OPENMP_ENABLED
+#ifdef USE_CUDA_CC
+  {
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all =
+        (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool present_ok =
+        acc_is_present((void*)elements_x_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)elements_y_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)elements_z_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)elements_nx_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)elements_ny_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)elements_nz_ptr, num * sizeof(double)) &&
+        acc_is_present((void*)elements_source_term_ptr, (2 * num) * sizeof(double)) &&
+        acc_is_present((void*)molecule_x_ptr, num_atoms * sizeof(double)) &&
+        acc_is_present((void*)molecule_y_ptr, num_atoms * sizeof(double)) &&
+        acc_is_present((void*)molecule_z_ptr, num_atoms * sizeof(double)) &&
+        acc_is_present((void*)molecule_charge_ptr, num_atoms * sizeof(double));
+    if (present_ok) {
+      acc_wait(acc_async_sync);
+      void* stream = acc_get_cuda_stream(acc_async_sync);
+      #pragma acc host_data use_device(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
+                                       elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
+                                       molecule_x_ptr, molecule_y_ptr, molecule_z_ptr, \
+                                       molecule_charge_ptr, elements_source_term_ptr)
+      {
+        elements_compute_source_term_cuda(elements_x_ptr, elements_y_ptr, elements_z_ptr,
+                                          elements_nx_ptr, elements_ny_ptr, elements_nz_ptr,
+                                          molecule_x_ptr, molecule_y_ptr, molecule_z_ptr,
+                                          molecule_charge_ptr, elements_source_term_ptr,
+                                          num, num_atoms, eps_solute, stream);
+      }
+      Elements::update_source_term_on_host();
+      timers_.compute_source_term.stop();
+      return;
+    }
+    if (require_all) {
+      std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
+                << "Aborting to avoid OpenACC fallback.\n";
+      std::exit(1);
+    }
+  }
+#endif
+#endif
+#ifdef OPENMP_ENABLED
 #pragma omp parallel for
 #endif
   for (std::size_t i = 0; i < num; ++i) {
@@ -435,9 +474,6 @@ void Elements::compute_source_term() {
     double source_term_1 = 0.;
     double source_term_2 = 0.;
 
-#ifdef OPENACC_ENABLED
-#pragma acc loop vector reduction(+ : source_term_1, source_term_2)
-#endif
     for (std::size_t j = 0; j < num_atoms; ++j) {
 
       /* r_s = distance of charge position to triangular */
@@ -617,8 +653,93 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
   timers_.compute_charges.stop();
 }
 
+Timer& Elements::compute_charges_timer() {
+  return timers_.compute_charges;
+}
+
+#ifdef USE_CUDA_CC
+void Elements::reset_cuda_ptrs_() const {
+  cuda_ptrs_ = CudaPtrs{};
+}
+#endif
+
 void Elements::copyin_to_device() const {
   timers_.copyin_to_device.start();
+
+#ifdef USE_CUDA_CC
+  const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+  const bool require_all =
+      (require_all_env && std::strcmp(require_all_env, "0") != 0);
+  if (require_all) {
+    if (cuda_ptrs_.ready) {
+      timers_.copyin_to_device.stop();
+      return;
+    }
+
+    CudaPtrs ptrs;
+    const std::size_t num = num_;
+    ptrs.num = num;
+
+    auto check = [](cudaError_t err, const char* what) {
+      if (err != cudaSuccess) {
+        std::cerr << "[CUDA_ELEMENTS] " << what << " failed: "
+                  << cudaGetErrorString(err) << "\n";
+        std::exit(1);
+      }
+    };
+
+    check(cudaMalloc(&ptrs.x, num * sizeof(double)), "cudaMalloc x");
+    check(cudaMalloc(&ptrs.y, num * sizeof(double)), "cudaMalloc y");
+    check(cudaMalloc(&ptrs.z, num * sizeof(double)), "cudaMalloc z");
+    check(cudaMemcpy(ptrs.x, x_.data(), num * sizeof(double),
+                     cudaMemcpyHostToDevice),
+          "cudaMemcpy x");
+    check(cudaMemcpy(ptrs.y, y_.data(), num * sizeof(double),
+                     cudaMemcpyHostToDevice),
+          "cudaMemcpy y");
+    check(cudaMemcpy(ptrs.z, z_.data(), num * sizeof(double),
+                     cudaMemcpyHostToDevice),
+          "cudaMemcpy z");
+
+    check(cudaMalloc(&ptrs.nx, num * sizeof(double)), "cudaMalloc nx");
+    check(cudaMalloc(&ptrs.ny, num * sizeof(double)), "cudaMalloc ny");
+    check(cudaMalloc(&ptrs.nz, num * sizeof(double)), "cudaMalloc nz");
+    check(cudaMemcpy(ptrs.nx, nx_.data(), num * sizeof(double),
+                     cudaMemcpyHostToDevice),
+          "cudaMemcpy nx");
+    check(cudaMemcpy(ptrs.ny, ny_.data(), num * sizeof(double),
+                     cudaMemcpyHostToDevice),
+          "cudaMemcpy ny");
+    check(cudaMemcpy(ptrs.nz, nz_.data(), num * sizeof(double),
+                     cudaMemcpyHostToDevice),
+          "cudaMemcpy nz");
+
+    check(cudaMalloc(&ptrs.area, num * sizeof(double)), "cudaMalloc area");
+    check(cudaMemcpy(ptrs.area, area_.data(), num * sizeof(double),
+                     cudaMemcpyHostToDevice),
+          "cudaMemcpy area");
+
+    check(cudaMalloc(&ptrs.target_q, num * sizeof(double)),
+          "cudaMalloc target_q");
+    check(cudaMalloc(&ptrs.target_q_dx, num * sizeof(double)),
+          "cudaMalloc target_q_dx");
+    check(cudaMalloc(&ptrs.target_q_dy, num * sizeof(double)),
+          "cudaMalloc target_q_dy");
+    check(cudaMalloc(&ptrs.target_q_dz, num * sizeof(double)),
+          "cudaMalloc target_q_dz");
+    check(cudaMalloc(&ptrs.source_q, num * sizeof(double)),
+          "cudaMalloc source_q");
+    check(cudaMalloc(&ptrs.source_q_dx, num * sizeof(double)),
+          "cudaMalloc source_q_dx");
+    check(cudaMalloc(&ptrs.source_q_dy, num * sizeof(double)),
+          "cudaMalloc source_q_dy");
+    check(cudaMalloc(&ptrs.source_q_dz, num * sizeof(double)),
+          "cudaMalloc source_q_dz");
+
+    ptrs.ready = true;
+    cuda_ptrs_ = ptrs;
+  }
+#endif
 
 #ifdef OPENACC_ENABLED
   const double *x_ptr = x_.data();
@@ -687,6 +808,32 @@ void Elements::update_source_term_on_host() const {
 
 void Elements::delete_from_device() const {
   timers_.delete_from_device.start();
+
+#ifdef USE_CUDA_CC
+  const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+  const bool require_all =
+      (require_all_env && std::strcmp(require_all_env, "0") != 0);
+  if (require_all) {
+    if (cuda_ptrs_.ready) {
+      cudaFree(cuda_ptrs_.x);
+      cudaFree(cuda_ptrs_.y);
+      cudaFree(cuda_ptrs_.z);
+      cudaFree(cuda_ptrs_.nx);
+      cudaFree(cuda_ptrs_.ny);
+      cudaFree(cuda_ptrs_.nz);
+      cudaFree(cuda_ptrs_.area);
+      cudaFree(cuda_ptrs_.target_q);
+      cudaFree(cuda_ptrs_.target_q_dx);
+      cudaFree(cuda_ptrs_.target_q_dy);
+      cudaFree(cuda_ptrs_.target_q_dz);
+      cudaFree(cuda_ptrs_.source_q);
+      cudaFree(cuda_ptrs_.source_q_dx);
+      cudaFree(cuda_ptrs_.source_q_dy);
+      cudaFree(cuda_ptrs_.source_q_dz);
+      reset_cuda_ptrs_();
+    }
+  }
+#endif
 
 #ifdef OPENACC_ENABLED
   const double *x_ptr = x_.data();

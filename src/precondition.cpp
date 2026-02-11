@@ -2,6 +2,9 @@
 
 #include "constants.h"
 #include "boundary_element.h"
+#ifdef USE_CUDA_CC
+#include "precondition_cuda.h"
+#endif
 
 static int lu_decomp(double* A, int N, int* pivot);
 static void lu_solve(double* A, int N, int* pivot, double* rhs);
@@ -19,6 +22,16 @@ void BoundaryElement::precondition_diagonal(double *z, double *r)
 
     timers_.precondition.stop();
 }
+
+#ifdef USE_CUDA_CC
+void BoundaryElement::precondition_diagonal_cuda(double* z_dev, double* r_dev, void* stream)
+{
+    double potential_coeff_1 = 0.5 * (1. +      params_.phys_eps_);
+    double potential_coeff_2 = 0.5 * (1. + 1. / params_.phys_eps_);
+    precondition_diag_cuda(z_dev, r_dev, elements_.num(),
+                           potential_coeff_1, potential_coeff_2, stream);
+}
+#endif
 
 
 void BoundaryElement::precondition_block(double *z, double *r)

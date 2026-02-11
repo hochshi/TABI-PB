@@ -20,6 +20,10 @@ public:
         elapsed_time_ += std::chrono::duration<double, std::milli>(end_time_ - start_time_);
     }
 
+    void add_seconds(double seconds) {
+        elapsed_time_ += std::chrono::duration<double>(seconds);
+    }
+
     double elapsed_time() const {
         return std::chrono::duration<double>(elapsed_time_).count();
     }
