@@ -630,11 +630,6 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
     }
   }
 #endif
-#pragma acc parallel loop present(                                             \
-    nx_ptr, ny_ptr, nz_ptr, area_ptr, potential_ptr, target_q_ptr,             \
-    target_q_dx_ptr, target_q_dy_ptr, target_q_dz_ptr, source_q_ptr,           \
-    source_q_dx_ptr, source_q_dy_ptr, source_q_dz_ptr)
-
 #elif OPENMP_ENABLED
 #pragma omp parallel for
 #endif
