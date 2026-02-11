@@ -236,23 +236,17 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         } else {
-            #pragma acc parallel loop present(potential_new[0:potential_num], \
-                                              potential_temp[0:potential_num])
             for (std::size_t i = 0; i < potential_num; ++i)
                 potential_temp[i] = potential_new[i];
 
-            #pragma acc parallel loop present(potential_new[0:potential_num])
             for (std::size_t i = 0; i < potential_num; ++i)
                 potential_new[i] = 0.;
         }
     }
 #else
-    #pragma acc parallel loop present(potential_new[0:potential_num], \
-                                      potential_temp[0:potential_num])
     for (std::size_t i = 0; i < potential_num; ++i)
         potential_temp[i] = potential_new[i];
 
-    #pragma acc parallel loop present(potential_new[0:potential_num])
     for (std::size_t i = 0; i < potential_num; ++i)
         potential_new[i] = 0.;
 #endif
@@ -335,16 +329,10 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         } else {
-            #pragma acc parallel loop present(potential_old[0:potential_num], \
-                                              potential_new[0:potential_num], \
-                                              potential_temp[0:potential_num])
             for (std::size_t i = 0; i < potential_num / 2; ++i)
                 potential_new[i] = beta * potential_temp[i]
                         + alpha * (potential_coeff_1 * potential_old[i] - potential_new[i]);
 
-            #pragma acc parallel loop present(potential_old[0:potential_num], \
-                                              potential_new[0:potential_num], \
-                                              potential_temp[0:potential_num])
             for (std::size_t i = potential_num / 2; i < potential_num; ++i)
                 potential_new[i] =  beta * potential_temp[i]
                         + alpha * (potential_coeff_2 * potential_old[i] - potential_new[i]);
@@ -609,11 +597,6 @@ void BoundaryElement::particle_particle_interact(double* __restrict potential,
     
     std::size_t num_elements = elements_.num();
 
-#ifdef OPENACC_ENABLED
-    #pragma acc parallel loop present(elements_x_ptr,  elements_y_ptr,  elements_z_ptr, \
-                                      elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
-                                      elements_area_ptr, potential, potential_old)
-#endif
     for (std::size_t j = target_node_element_begin; j < target_node_element_end; ++j) {
         
         double target_x = elements_x_ptr[j];
@@ -627,9 +610,6 @@ void BoundaryElement::particle_particle_interact(double* __restrict potential,
         double pot_temp_1 = 0.;
         double pot_temp_2 = 0.;
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop reduction(+:pot_temp_1,pot_temp_2)
-#endif
         for (std::size_t k = source_node_element_begin; k < source_node_element_end; ++k) {
         
             double source_x = elements_x_ptr[k];
@@ -728,13 +708,6 @@ void BoundaryElement::particle_cluster_interact(double* __restrict potential,
     const double* __restrict clusters_q_dy_ptr = interp_charge_dy_.data();
     const double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
     
-#ifdef OPENACC_ENABLED
-    #pragma acc parallel loop present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                    targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
-                    clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                    clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                    potential)
-#endif
     for (std::size_t j = target_node_element_begin; j < target_node_element_end; ++j) {
 
         double target_x = elements_x_ptr[j];
@@ -746,10 +719,6 @@ void BoundaryElement::particle_cluster_interact(double* __restrict potential,
         double pot_comp_dy = 0.;
         double pot_comp_dz = 0.;
         
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) reduction(+:pot_comp_,   pot_comp_dx, \
-                                                 pot_comp_dy, pot_comp_dz)
-#endif
         for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
         for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
         for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
@@ -853,13 +822,6 @@ void BoundaryElement::cluster_particle_interact(double* __restrict potential,
     const double* __restrict sources_q_dy_ptr  = elements_.source_charge_dy_ptr();
     const double* __restrict sources_q_dz_ptr  = elements_.source_charge_dz_ptr();
     
-#ifdef OPENACC_ENABLED
-    #pragma acc parallel loop collapse(3) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                    clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
-                    elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                    sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
-                    potential)
-#endif
     for (int j1 = 0; j1 < num_interp_pts_per_node; ++j1) {
     for (int j2 = 0; j2 < num_interp_pts_per_node; ++j2) {
     for (int j3 = 0; j3 < num_interp_pts_per_node; ++j3) {
@@ -877,10 +839,6 @@ void BoundaryElement::cluster_particle_interact(double* __restrict potential,
         double pot_comp_dy = 0.;
         double pot_comp_dz = 0.;
     
-#ifdef OPENACC_ENABLED
-        #pragma acc loop reduction(+:pot_comp_,   pot_comp_dx, \
-                                     pot_comp_dy, pot_comp_dz)
-#endif
         for (std::size_t k = source_node_element_begin; k < source_node_element_end; ++k) {
 
             double dx = target_x - elements_x_ptr[k];
@@ -980,12 +938,6 @@ void BoundaryElement::cluster_cluster_interact(double* __restrict potential,
     const double* __restrict clusters_q_dy_ptr = interp_charge_dy_.data();
     const double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
 
-#ifdef OPENACC_ENABLED
-    #pragma acc parallel loop collapse(3) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                    clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
-                    clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                    potential)
-#endif
     for (int j1 = 0; j1 < num_interp_pts_per_node; j1++) {
     for (int j2 = 0; j2 < num_interp_pts_per_node; j2++) {
     for (int j3 = 0; j3 < num_interp_pts_per_node; j3++) {
@@ -1003,10 +955,6 @@ void BoundaryElement::cluster_cluster_interact(double* __restrict potential,
         double pot_comp_dy = 0.;
         double pot_comp_dz = 0.;
     
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) reduction(+:pot_comp_,   pot_comp_dx, \
-                                                 pot_comp_dy, pot_comp_dz)
-#endif
         for (int k1 = 0; k1 < num_interp_pts_per_node; k1++) {
         for (int k2 = 0; k2 < num_interp_pts_per_node; k2++) {
         for (int k3 = 0; k3 < num_interp_pts_per_node; k3++) {
@@ -1218,12 +1166,8 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
         }
     }
 #endif
-    #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                           elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
-                                           elements_area_ptr, potential, potential_old, \
-                                           node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
-                                           offsets_ptr[0:offsets_num], sources_ptr[0:sources_num])
-#elif defined(OPENMP_ENABLED)
+#endif  // OPENACC_ENABLED
+#if defined(OPENMP_ENABLED)
     #pragma omp parallel for
 #endif
     for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
@@ -1233,9 +1177,6 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
         std::size_t src_start = offsets_ptr[target_node_idx];
         std::size_t src_end   = offsets_ptr[target_node_idx + 1];
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop vector
-#endif
         for (std::size_t j = target_begin; j < target_end; ++j) {
             double target_x = elements_x_ptr[j];
             double target_y = elements_y_ptr[j];
@@ -1599,18 +1540,11 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
         std::exit(1);
     }
 #endif
+#endif  // OPENACC_ENABLED
     if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
         int n  = num_interp_pts_per_node;
         int n2 = n * n;
 
-        #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                               elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, elements_area_ptr, \
-                                               targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
-                                               clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                               clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                               potential, potential_old, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
-                                               pp_offsets_ptr[0:pp_offsets_num], pp_sources_ptr[0:pp_sources_num], \
-                                               pc_offsets_ptr[0:pc_offsets_num], pc_sources_ptr[0:pc_sources_num])
         for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
             std::size_t element_begin = node_begin_ptr[target_node_idx];
             std::size_t element_end   = node_end_ptr[target_node_idx];
@@ -1642,7 +1576,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                 double pot_comp_dy[kTargetElemTile];
                 double pot_comp_dz[kTargetElemTile];
 
-                #pragma acc loop vector
                 for (int t = 0; t < tile_len; ++t) {
                     std::size_t j = tile_start + static_cast<std::size_t>(t);
                     target_x_cache[t] = elements_x_ptr[j];
@@ -1682,7 +1615,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                             double potential_old_0 = potential_old[k];
                             double potential_old_1 = potential_old[k + num_elements];
 
-                            #pragma acc loop vector
                             for (int t = 0; t < tile_len; ++t) {
                                 double dist_x = source_x - target_x_cache[t];
                                 double dist_y = source_y - target_y_cache[t];
@@ -1729,7 +1661,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                     double source_y_cache[kBatchedMaxInterpPts];
                     double source_z_cache[kBatchedMaxInterpPts];
 
-                    #pragma acc loop vector
                     for (int i = 0; i < n; ++i) {
                         source_x_cache[i] = clusters_x_ptr[source_cluster_interp_pts_begin + i];
                         source_y_cache[i] = clusters_y_ptr[source_cluster_interp_pts_begin + i];
@@ -1750,7 +1681,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                         double source_q_dy = clusters_q_dy_ptr[kk];
                         double source_q_dz = clusters_q_dz_ptr[kk];
 
-                        #pragma acc loop vector
                         for (int t = 0; t < tile_len; ++t) {
                             double dx = target_x_cache[t] - source_x;
                             double dy = target_y_cache[t] - source_y;
@@ -1796,7 +1726,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                     }
                 }
 
-                #pragma acc loop vector
                 for (int t = 0; t < tile_len; ++t) {
                     std::size_t j = tile_start + static_cast<std::size_t>(t);
                     potential[j]                += pot_pp_1[t] + target_q_cache[t] * pot_comp_[t];
@@ -1811,16 +1740,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
         timers_.particle_cluster_interact.stop();
         return;
     }
-    #pragma acc parallel loop gang present(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                           elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, elements_area_ptr, \
-                                           targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
-                                           clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                           clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                           potential, potential_old, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
-                                           element_node_idx_ptr[0:num_elements], \
-                                           pp_offsets_ptr[0:pp_offsets_num], pp_sources_ptr[0:pp_sources_num], \
-                                           pc_offsets_ptr[0:pc_offsets_num], pc_sources_ptr[0:pc_sources_num])
-#elif defined(OPENMP_ENABLED)
+#if defined(OPENMP_ENABLED)
     #pragma omp parallel for
 #endif
     for (std::size_t j = 0; j < num_elements; ++j) {
@@ -1847,9 +1767,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                 std::size_t source_begin = node_begin_ptr[source_node_idx];
                 std::size_t source_end   = node_end_ptr[source_node_idx];
 
-#ifdef OPENACC_ENABLED
-                #pragma acc loop vector reduction(+:pot_pp_1, pot_pp_2)
-#endif
                 for (std::size_t k = source_begin; k < source_end; ++k) {
                     double source_x = elements_x_ptr[k];
                     double source_y = elements_y_ptr[k];
@@ -1917,26 +1834,22 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                 double dy2_cache[kMaxInterpPts];
                 double dz2_cache[kMaxInterpPts];
 
-                #pragma acc loop seq
                 for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
                     double dx = target_x - clusters_x_ptr[source_cluster_interp_pts_begin + k1];
                     dx_cache[k1] = dx;
                     dx2_cache[k1] = dx * dx;
                 }
-                #pragma acc loop seq
                 for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
                     double dy = target_y - clusters_y_ptr[source_cluster_interp_pts_begin + k2];
                     dy_cache[k2] = dy;
                     dy2_cache[k2] = dy * dy;
                 }
-                #pragma acc loop seq
                 for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
                     double dz = target_z - clusters_z_ptr[source_cluster_interp_pts_begin + k3];
                     dz_cache[k3] = dz;
                     dz2_cache[k3] = dz * dz;
                 }
 
-                #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
                 for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
                 for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
                 for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
@@ -1988,9 +1901,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
             }
 #endif
 
-#ifdef OPENACC_ENABLED
-            #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
-#endif
             for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
             for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
             for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
@@ -2104,16 +2014,7 @@ void BoundaryElement::cluster_particle_interact_all(double* __restrict potential
     std::size_t num_nodes = node_particles_begin_.size();
 #endif
 
-#ifdef OPENACC_ENABLED
-    std::size_t offsets_num = cp_offsets_u32_.size();
-    std::size_t sources_num = cp_sources_u32_.size();
-    #pragma acc parallel loop gang present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                           clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
-                                           elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                           sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
-                                           potential, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
-                                           offsets_ptr[0:offsets_num], sources_ptr[0:sources_num])
-#elif defined(OPENMP_ENABLED)
+#if defined(OPENMP_ENABLED)
     #pragma omp parallel for
 #endif
     for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
@@ -2123,9 +2024,6 @@ void BoundaryElement::cluster_particle_interact_all(double* __restrict potential
         std::size_t src_start = offsets_ptr[target_node_idx];
         std::size_t src_end   = offsets_ptr[target_node_idx + 1];
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) vector
-#endif
         for (int j1 = 0; j1 < num_interp_pts_per_node; ++j1) {
         for (int j2 = 0; j2 < num_interp_pts_per_node; ++j2) {
         for (int j3 = 0; j3 < num_interp_pts_per_node; ++j3) {
@@ -2147,10 +2045,7 @@ void BoundaryElement::cluster_particle_interact_all(double* __restrict potential
                 std::size_t source_begin = node_begin_ptr[source_node_idx];
                 std::size_t source_end   = node_end_ptr[source_node_idx];
 
-#ifdef OPENACC_ENABLED
-                #pragma acc loop vector reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
-#endif
-                for (std::size_t k = source_begin; k < source_end; ++k) {
+            for (std::size_t k = source_begin; k < source_end; ++k) {
                     double dx = target_x - elements_x_ptr[k];
                     double dy = target_y - elements_y_ptr[k];
                     double dz = target_z - elements_z_ptr[k];
@@ -2412,14 +2307,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         }
 #endif
 
-        #pragma acc parallel loop gang vector_length(32) present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                               clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
-                                               clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                               elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                               sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
-                                               potential, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
-                                               cp_offsets_ptr[0:cp_offsets_num], cp_sources_ptr[0:cp_sources_num], \
-                                               cc_offsets_ptr[0:cc_offsets_num], cc_sources_ptr[0:cc_sources_num])
+#endif  // OPENACC_ENABLED
         for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
             std::size_t target_cluster_interp_pts_begin = target_node_idx * num_interp_pts_per_node;
             std::size_t target_cluster_potentials_begin = target_node_idx * num_charges_per_node;
@@ -2433,7 +2321,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
             double target_y_cache[kBatchedMaxInterpPts];
             double target_z_cache[kBatchedMaxInterpPts];
 
-            #pragma acc loop vector
             for (int i = 0; i < n; ++i) {
                 target_x_cache[i] = clusters_x_ptr[target_cluster_interp_pts_begin + i];
                 target_y_cache[i] = clusters_y_ptr[target_cluster_interp_pts_begin + i];
@@ -2441,9 +2328,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
             }
 
             if (n <= 3) {
-                #pragma acc loop worker
                 for (int j1 = 0; j1 < n; ++j1) {
-                #pragma acc loop vector collapse(2)
                 for (int j2 = 0; j2 < n; ++j2) {
                 for (int j3 = 0; j3 < n; ++j3) {
                     std::size_t out_idx = target_cluster_potentials_begin + j1 * n2 + j2 * n + j3;
@@ -2462,14 +2347,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                         std::size_t source_begin = node_begin_ptr[source_node_idx];
                         std::size_t source_end   = node_end_ptr[source_node_idx];
 
-                        #pragma acc cache(elements_x_ptr[source_begin:source_end-source_begin], \
-                                          elements_y_ptr[source_begin:source_end-source_begin], \
-                                          elements_z_ptr[source_begin:source_end-source_begin], \
-                                          sources_q_ptr[source_begin:source_end-source_begin], \
-                                          sources_q_dx_ptr[source_begin:source_end-source_begin], \
-                                          sources_q_dy_ptr[source_begin:source_end-source_begin], \
-                                          sources_q_dz_ptr[source_begin:source_end-source_begin])
-                        #pragma acc loop seq
                         for (std::size_t k = source_begin; k < source_end; ++k) {
                             double dx = target_x - elements_x_ptr[k];
                             double dy = target_y - elements_y_ptr[k];
@@ -2518,14 +2395,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                         std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
                         std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
 
-                        #pragma acc cache(clusters_x_ptr[source_cluster_interp_pts_begin:num_interp_pts_per_node], \
-                                          clusters_y_ptr[source_cluster_interp_pts_begin:num_interp_pts_per_node], \
-                                          clusters_z_ptr[source_cluster_interp_pts_begin:num_interp_pts_per_node], \
-                                          clusters_q_ptr[source_cluster_charges_begin:num_charges_per_node], \
-                                          clusters_q_dx_ptr[source_cluster_charges_begin:num_charges_per_node], \
-                                          clusters_q_dy_ptr[source_cluster_charges_begin:num_charges_per_node], \
-                                          clusters_q_dz_ptr[source_cluster_charges_begin:num_charges_per_node])
-                        #pragma acc loop seq collapse(3)
                         for (int k1 = 0; k1 < n; ++k1) {
                         for (int k2 = 0; k2 < n; ++k2) {
                         for (int k3 = 0; k3 < n; ++k3) {
@@ -2599,7 +2468,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                         double pot_comp_dy[kTargetTileCharges];
                         double pot_comp_dz[kTargetTileCharges];
 
-                        #pragma acc loop vector collapse(3)
                         for (int j1 = t1; j1 < t1_max; ++j1) {
                         for (int j2 = t2; j2 < t2_max; ++j2) {
                         for (int j3 = t3; j3 < t3_max; ++j3) {
@@ -2627,7 +2495,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                                 double source_q_dy = sources_q_dy_ptr[k];
                                 double source_q_dz = sources_q_dz_ptr[k];
 
-                                #pragma acc loop vector collapse(3)
                                 for (int j1 = t1; j1 < t1_max; ++j1) {
                                 for (int j2 = t2; j2 < t2_max; ++j2) {
                                 for (int j3 = t3; j3 < t3_max; ++j3) {
@@ -2687,7 +2554,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                             double source_y_cache[kBatchedMaxInterpPts];
                             double source_z_cache[kBatchedMaxInterpPts];
 
-                            #pragma acc loop vector
                             for (int i = 0; i < n; ++i) {
                                 source_x_cache[i] = clusters_x_ptr[source_cluster_interp_pts_begin + i];
                                 source_y_cache[i] = clusters_y_ptr[source_cluster_interp_pts_begin + i];
@@ -2708,7 +2574,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                                 double source_q_dy = clusters_q_dy_ptr[kk];
                                 double source_q_dz = clusters_q_dz_ptr[kk];
 
-                                #pragma acc loop vector collapse(3)
                                 for (int j1 = t1; j1 < t1_max; ++j1) {
                                 for (int j2 = t2; j2 < t2_max; ++j2) {
                                 for (int j3 = t3; j3 < t3_max; ++j3) {
@@ -2760,7 +2625,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                             }
                         }
 
-                        #pragma acc loop vector collapse(3)
                         for (int j1 = t1; j1 < t1_max; ++j1) {
                         for (int j2 = t2; j2 < t2_max; ++j2) {
                         for (int j3 = t3; j3 < t3_max; ++j3) {
@@ -2782,15 +2646,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         return;
     }
 
-    #pragma acc parallel loop gang present(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                           clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
-                                           clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                           elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                           sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
-                                           potential, node_begin_ptr[0:num_nodes], node_end_ptr[0:num_nodes], \
-                                           cp_offsets_ptr[0:cp_offsets_num], cp_sources_ptr[0:cp_sources_num], \
-                                           cc_offsets_ptr[0:cc_offsets_num], cc_sources_ptr[0:cc_sources_num])
-#elif defined(OPENMP_ENABLED)
+#if defined(OPENMP_ENABLED)
     #pragma omp parallel for
 #endif
     for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
@@ -2802,9 +2658,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         std::size_t cc_start = cc_offsets_ptr[target_node_idx];
         std::size_t cc_end   = cc_offsets_ptr[target_node_idx + 1];
 
-#ifdef OPENACC_ENABLED
-        #pragma acc loop collapse(3) vector
-#endif
         for (int j1 = 0; j1 < num_interp_pts_per_node; j1++) {
         for (int j2 = 0; j2 < num_interp_pts_per_node; j2++) {
         for (int j3 = 0; j3 < num_interp_pts_per_node; j3++) {
@@ -2826,9 +2679,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                 std::size_t source_begin = node_begin_ptr[source_node_idx];
                 std::size_t source_end   = node_end_ptr[source_node_idx];
 
-#ifdef OPENACC_ENABLED
-                #pragma acc loop vector reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
-#endif
                 for (std::size_t k = source_begin; k < source_end; ++k) {
                     double dx = target_x - elements_x_ptr[k];
                     double dy = target_y - elements_y_ptr[k];
@@ -2886,26 +2736,22 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                     double dy2_cache[kMaxInterpPts];
                     double dz2_cache[kMaxInterpPts];
 
-                    #pragma acc loop seq
                     for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
                         double dx = target_x - clusters_x_ptr[source_cluster_interp_pts_begin + k1];
                         dx_cache[k1] = dx;
                         dx2_cache[k1] = dx * dx;
                     }
-                    #pragma acc loop seq
                     for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
                         double dy = target_y - clusters_y_ptr[source_cluster_interp_pts_begin + k2];
                         dy_cache[k2] = dy;
                         dy2_cache[k2] = dy * dy;
                     }
-                    #pragma acc loop seq
                     for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
                         double dz = target_z - clusters_z_ptr[source_cluster_interp_pts_begin + k3];
                         dz_cache[k3] = dz;
                         dz2_cache[k3] = dz * dz;
                     }
 
-                    #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
                     for (int k1 = 0; k1 < num_interp_pts_per_node; ++k1) {
                     for (int k2 = 0; k2 < num_interp_pts_per_node; ++k2) {
                     for (int k3 = 0; k3 < num_interp_pts_per_node; ++k3) {
@@ -2957,9 +2803,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                 }
 #endif
 
-#ifdef OPENACC_ENABLED
-                #pragma acc loop collapse(3) reduction(+:pot_comp_, pot_comp_dx, pot_comp_dy, pot_comp_dz)
-#endif
                 for (int k1 = 0; k1 < num_interp_pts_per_node; k1++) {
                 for (int k2 = 0; k2 < num_interp_pts_per_node; k2++) {
                 for (int k3 = 0; k3 < num_interp_pts_per_node; k3++) {
@@ -3863,8 +3706,6 @@ void BoundaryElement::clear_cluster_charges()
     }
 #endif
     
-    #pragma acc parallel loop present(clusters_q_ptr, clusters_q_dx_ptr, \
-                                      clusters_q_dy_ptr, clusters_q_dz_ptr)
     for (std::size_t i = 0; i < num_charges; ++i) {
         clusters_q_ptr[i] = 0.;
         clusters_q_dx_ptr[i] = 0.;
@@ -3918,8 +3759,6 @@ void BoundaryElement::clear_cluster_potentials()
     }
 #endif
     
-    #pragma acc parallel loop present(clusters_p_ptr, clusters_p_dx_ptr, \
-                                      clusters_p_dy_ptr, clusters_p_dz_ptr)
     for (std::size_t i = 0; i < num_potentials; ++i) {
         clusters_p_ptr[i] = 0.;
         clusters_p_dx_ptr[i] = 0.;
