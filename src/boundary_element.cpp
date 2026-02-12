@@ -4054,18 +4054,28 @@ void BoundaryElement::copyin_clusters_to_device() const
         const std::size_t potential_num = potential_temp_.size();
 
         if (num_interp_pts > 0) {
-            check(cudaMalloc(&ptrs.clusters_x, num_interp_pts * sizeof(double)), "cudaMalloc clusters_x");
-            check(cudaMalloc(&ptrs.clusters_y, num_interp_pts * sizeof(double)), "cudaMalloc clusters_y");
-            check(cudaMalloc(&ptrs.clusters_z, num_interp_pts * sizeof(double)), "cudaMalloc clusters_z");
-            check(cudaMemcpy(ptrs.clusters_x, interp_pts_.interp_x_ptr(),
-                             num_interp_pts * sizeof(double), cudaMemcpyHostToDevice),
-                  "cudaMemcpy clusters_x");
-            check(cudaMemcpy(ptrs.clusters_y, interp_pts_.interp_y_ptr(),
-                             num_interp_pts * sizeof(double), cudaMemcpyHostToDevice),
-                  "cudaMemcpy clusters_y");
-            check(cudaMemcpy(ptrs.clusters_z, interp_pts_.interp_z_ptr(),
-                             num_interp_pts * sizeof(double), cudaMemcpyHostToDevice),
-                  "cudaMemcpy clusters_z");
+#ifdef OPENACC_ENABLED
+            const bool present_x =
+                acc_is_present((void*)interp_pts_.interp_x_ptr(), num_interp_pts * sizeof(double));
+            const bool present_y =
+                acc_is_present((void*)interp_pts_.interp_y_ptr(), num_interp_pts * sizeof(double));
+            const bool present_z =
+                acc_is_present((void*)interp_pts_.interp_z_ptr(), num_interp_pts * sizeof(double));
+            if (!present_x || !present_y || !present_z) {
+                std::cerr << "[CUDA_BE] require_all set but interp_pts buffers not present on device. "
+                          << "Did you call interp_pts.copyin_to_device()?\n";
+                std::exit(1);
+            }
+
+            ptrs.clusters_x = static_cast<double*>(acc_deviceptr((void*)interp_pts_.interp_x_ptr()));
+            ptrs.clusters_y = static_cast<double*>(acc_deviceptr((void*)interp_pts_.interp_y_ptr()));
+            ptrs.clusters_z = static_cast<double*>(acc_deviceptr((void*)interp_pts_.interp_z_ptr()));
+            ptrs.owns_clusters_xyz = false;
+#else
+            std::cerr << "[CUDA_BE] require_all set but OpenACC interop is disabled; "
+                      << "cannot obtain interp_pts device buffers.\n";
+            std::exit(1);
+#endif
         }
 
         if (num_charges > 0) {
@@ -4338,9 +4348,11 @@ void BoundaryElement::delete_clusters_from_device() const
         (require_all_env && std::strcmp(require_all_env, "0") != 0);
     if (require_all) {
         if (cuda_ptrs_.ready) {
-            cudaFree(cuda_ptrs_.clusters_x);
-            cudaFree(cuda_ptrs_.clusters_y);
-            cudaFree(cuda_ptrs_.clusters_z);
+            if (cuda_ptrs_.owns_clusters_xyz) {
+                cudaFree(cuda_ptrs_.clusters_x);
+                cudaFree(cuda_ptrs_.clusters_y);
+                cudaFree(cuda_ptrs_.clusters_z);
+            }
             cudaFree(cuda_ptrs_.clusters_q);
             cudaFree(cuda_ptrs_.clusters_q_dx);
             cudaFree(cuda_ptrs_.clusters_q_dy);

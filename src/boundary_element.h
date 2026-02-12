@@ -71,6 +71,7 @@ private:
 #ifdef USE_CUDA_CC
     struct CudaPtrs {
         bool ready = false;
+        bool owns_clusters_xyz = true;
         double* clusters_x = nullptr;
         double* clusters_y = nullptr;
         double* clusters_z = nullptr;
