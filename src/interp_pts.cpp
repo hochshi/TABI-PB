@@ -10,7 +10,7 @@
 #include "constants.h"
 
 #ifdef USE_CUDA_CC
-#include <cuda_runtime.h>
+#include "cuda_helpers.h"
 #include "interp_pts_cuda.h"
 #endif
 
@@ -50,20 +50,18 @@ void InterpolationPoints::compute_all_interp_pts()
     
     int num_interp_pts_per_node = num_interp_pts_per_node_;
     int degree = num_interp_pts_per_node - 1;
-#if defined(USE_CUDA_CC) && defined(OPENACC_ENABLED)
-    if (require_all) {
-        const std::size_t num_nodes = tree_.num_nodes();
-        const std::size_t num_interp_pts = num_interp_pts_;
-        const bool present_ok =
-            acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double)) &&
-            acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double)) &&
-            acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
-        if (!present_ok) {
-            std::cerr << "[CUDA_INTERP] require_all set but interp buffers not present. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
 
+#ifdef USE_CUDA_CC
+    const bool use_cuda = (device_state_ == CudaDeviceState::DeviceMapped);
+    if (require_all && !use_cuda) {
+        std::fprintf(stderr,
+                     "[CUDA_INTERP] TABIPB_CUDA_REQUIRE_ALL=1 but interp "
+                     "device buffers are not mapped.\n");
+        std::abort();
+    }
+
+    if (use_cuda) {
+        const std::size_t num_nodes = tree_.num_nodes();
         std::vector<double> bounds(num_nodes * 6);
         for (std::size_t node_idx = 0; node_idx < num_nodes; ++node_idx) {
             auto node_bounds = tree_.node_particle_bounds(node_idx);
@@ -76,30 +74,26 @@ void InterpolationPoints::compute_all_interp_pts()
             bounds[base + 5] = node_bounds[5];
         }
 
-        auto check = [](cudaError_t err, const char* what) {
-            if (err != cudaSuccess) {
-                std::cerr << "[CUDA_INTERP] " << what << " failed: "
-                          << cudaGetErrorString(err) << "\n";
-                std::exit(1);
-            }
-        };
-
         double* bounds_dev = nullptr;
-        check(cudaMalloc(&bounds_dev, bounds.size() * sizeof(double)), "cudaMalloc bounds");
-        check(cudaMemcpy(bounds_dev, bounds.data(), bounds.size() * sizeof(double),
-                         cudaMemcpyHostToDevice),
-              "cudaMemcpy bounds");
+        CUDA_MALLOC_OR_DIE(&bounds_dev, bounds.size() * sizeof(double));
 
-        acc_wait(acc_async_sync);
-        void* stream = acc_get_cuda_stream(acc_async_sync);
-        #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr)
-        {
-            interp_pts_cuda(bounds_dev, clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
-                            num_nodes, num_interp_pts_per_node, stream);
-        }
-        check(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream)),
-              "cudaStreamSynchronize interp_pts");
-        check(cudaFree(bounds_dev), "cudaFree bounds");
+        cudaStream_t stream = nullptr;
+#ifdef OPENACC_ENABLED
+        stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+
+        CUDA_MEMCPY_ASYNC(bounds_dev, bounds.data(),
+                          bounds.size() * sizeof(double),
+                          cudaMemcpyHostToDevice, stream);
+
+        auto &buf = device_buffers_;
+        interp_pts_cuda(bounds_dev, buf.interp_x_dev, buf.interp_y_dev,
+                        buf.interp_z_dev, num_nodes, num_interp_pts_per_node,
+                        stream);
+        CUDA_CHECK_LAST_KERNEL();
+        CUDA_SYNC_AND_CHECK();
+        CUDA_FREE_AND_NULL(bounds_dev);
+        return;
     }
 #endif
 
@@ -115,15 +109,6 @@ void InterpolationPoints::compute_all_interp_pts()
         }
     }
 
-#ifdef OPENACC_ENABLED
-    {
-        const std::size_t num_interp_pts = num_interp_pts_;
-        #pragma acc update device(clusters_x_ptr[0:num_interp_pts], \
-                                  clusters_y_ptr[0:num_interp_pts], \
-                                  clusters_z_ptr[0:num_interp_pts])
-    }
-#endif
-
     //timers_.compute_all_interp_pts.stop();
 }
 
@@ -134,7 +119,57 @@ void InterpolationPoints::copyin_to_device() const
 {
 //    timers_.copyin_to_device.start();
 
+#ifdef USE_CUDA_CC
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all =
+        (require_all_env && std::strcmp(require_all_env, "0") != 0);
+
+    const std::size_t num_interp_pts = num_interp_pts_;
+    auto &buf = device_buffers_;
+    if (buf.num_interp_pts != 0 && buf.num_interp_pts != num_interp_pts) {
+        CUDA_FREE_AND_NULL(buf.interp_x_dev);
+        CUDA_FREE_AND_NULL(buf.interp_y_dev);
+        CUDA_FREE_AND_NULL(buf.interp_z_dev);
+        buf.num_interp_pts = 0;
+    }
+
+    if (buf.num_interp_pts == 0 && num_interp_pts > 0) {
+        CUDA_MALLOC_OR_DIE(&buf.interp_x_dev,
+                           num_interp_pts * sizeof(double));
+        CUDA_MALLOC_OR_DIE(&buf.interp_y_dev,
+                           num_interp_pts * sizeof(double));
+        CUDA_MALLOC_OR_DIE(&buf.interp_z_dev,
+                           num_interp_pts * sizeof(double));
+        buf.num_interp_pts = num_interp_pts;
+    }
+
 #ifdef OPENACC_ENABLED
+    const double* x_ptr = interp_x_.data();
+    const double* y_ptr = interp_y_.data();
+    const double* z_ptr = interp_z_.data();
+    const std::size_t bytes = num_interp_pts * sizeof(double);
+
+    CUDA_ACC_UNMAP_IF_PRESENT(x_ptr, bytes);
+    CUDA_ACC_UNMAP_IF_PRESENT(y_ptr, bytes);
+    CUDA_ACC_UNMAP_IF_PRESENT(z_ptr, bytes);
+
+    CUDA_ACC_MAP_CONST(x_ptr, buf.interp_x_dev, bytes);
+    CUDA_ACC_MAP_CONST(y_ptr, buf.interp_y_dev, bytes);
+    CUDA_ACC_MAP_CONST(z_ptr, buf.interp_z_dev, bytes);
+#endif
+
+    CUDA_SYNC_AND_CHECK();
+    device_state_ = CudaDeviceState::DeviceMapped;
+
+    if (require_all && num_interp_pts > 0) {
+        if (!buf.interp_x_dev || !buf.interp_y_dev || !buf.interp_z_dev) {
+            std::fprintf(stderr,
+                         "[CUDA_INTERP] missing device buffers under "
+                         "TABIPB_CUDA_REQUIRE_ALL=1\n");
+            std::abort();
+        }
+    }
+#elif defined(OPENACC_ENABLED)
     const double* x_ptr = interp_x_.data();
     const double* y_ptr = interp_y_.data();
     const double* z_ptr = interp_z_.data();
@@ -154,7 +189,21 @@ void InterpolationPoints::delete_from_device() const
 {
 //    timers_.delete_from_device.start();
 
+#ifdef USE_CUDA_CC
+    auto &buf = device_buffers_;
 #ifdef OPENACC_ENABLED
+    const std::size_t num_interp_pts = num_interp_pts_;
+    const std::size_t bytes = num_interp_pts * sizeof(double);
+    CUDA_ACC_UNMAP_IF_PRESENT(interp_x_.data(), bytes);
+    CUDA_ACC_UNMAP_IF_PRESENT(interp_y_.data(), bytes);
+    CUDA_ACC_UNMAP_IF_PRESENT(interp_z_.data(), bytes);
+#endif
+    CUDA_FREE_AND_NULL(buf.interp_x_dev);
+    CUDA_FREE_AND_NULL(buf.interp_y_dev);
+    CUDA_FREE_AND_NULL(buf.interp_z_dev);
+    buf = DeviceBuffers{};
+    device_state_ = CudaDeviceState::HostOnly;
+#elif defined(OPENACC_ENABLED)
     const double* x_ptr = interp_x_.data();
     const double* y_ptr = interp_y_.data();
     const double* z_ptr = interp_z_.data();

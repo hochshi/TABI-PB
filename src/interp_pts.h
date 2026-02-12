@@ -5,6 +5,10 @@
 
 #include "tree.h"
 
+#ifdef USE_CUDA_CC
+#include "cuda_state.h"
+#endif
+
 class InterpolationPoints
 {
 private:
@@ -16,6 +20,20 @@ private:
     std::vector<double> interp_x_;
     std::vector<double> interp_y_;
     std::vector<double> interp_z_;
+
+#ifdef USE_CUDA_CC
+    class DeviceBuffers {
+        friend class InterpolationPoints;
+    private:
+        double* interp_x_dev = nullptr;
+        double* interp_y_dev = nullptr;
+        double* interp_z_dev = nullptr;
+        std::size_t num_interp_pts = 0;
+    };
+
+    mutable DeviceBuffers device_buffers_;
+    mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+#endif
     
     
 public:
