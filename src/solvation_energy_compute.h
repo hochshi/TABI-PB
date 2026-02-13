@@ -7,6 +7,9 @@
 #include "interp_pts.h"
 #include "tree_compute.h"
 
+#ifdef USE_CUDA_CC
+#include "cuda_state.h"
+#endif
 //struct Timers_SolvationEnergyCompute;
 //struct Timers;
 
@@ -49,9 +52,38 @@ private:
     
     /* Solvation energy */
     
-    std::vector<double> solv_eng_vec_;
+    mutable std::vector<double> solv_eng_vec_;
     double solvation_energy_;
     
+#ifdef USE_CUDA_CC
+    class DeviceBuffers {
+        friend class SolvationEnergyCompute;
+    private:
+        double* weights_up_dev = nullptr;
+        double* weights_down_dev = nullptr;
+        double* q_dev = nullptr;
+        double* p_dev = nullptr;
+        double* p_dx_dev = nullptr;
+        double* p_dy_dev = nullptr;
+        double* p_dz_dev = nullptr;
+        double* solv_eng_dev = nullptr;
+
+        std::size_t weights_up_num = 0;
+        std::size_t weights_down_num = 0;
+        std::size_t q_num = 0;
+        std::size_t p_num = 0;
+        std::size_t p_dx_num = 0;
+        std::size_t p_dy_num = 0;
+        std::size_t p_dz_num = 0;
+        std::size_t solv_eng_num = 0;
+
+        bool ready = false;
+    };
+
+    mutable DeviceBuffers device_buffers_;
+    mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+#endif
+
     
     void particle_particle_interact(std::array<std::size_t, 2> target_node_particle_idxs,
                                     std::array<std::size_t, 2> source_node_particle_idxs) override;

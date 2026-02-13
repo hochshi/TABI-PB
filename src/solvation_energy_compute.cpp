@@ -5,16 +5,17 @@
 #include <iostream>
 #include <vector>
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
 #ifdef USE_CUDA_CC
+#include "cuda_helpers.h"
 #include <cuda.h>
-#include <cuda_runtime.h>
 extern "C" {
     CUcontext acc_get_cuda_context(void) __attribute__((weak));
 }
 #include "solvation_energy_cuda.h"
+#endif
+
+#ifdef OPENACC_ENABLED
+#include <openacc.h>
 #endif
 
 #include "constants.h"
@@ -696,8 +697,34 @@ void SolvationEnergyCompute::upward_pass()
     }
 
     
+#ifdef USE_CUDA_CC
+    auto &buf = device_buffers_;
+    const std::size_t weights_bytes = static_cast<std::size_t>(weights_num) * sizeof(double);
+    if (buf.weights_up_num != 0 &&
+        buf.weights_up_num != static_cast<std::size_t>(weights_num)) {
+        CUDA_FREE_AND_NULL(buf.weights_up_dev);
+        buf.weights_up_num = 0;
+    }
+    if (buf.weights_up_num == 0 && weights_num > 0) {
+        CUDA_MALLOC_OR_DIE(&buf.weights_up_dev, weights_bytes);
+        buf.weights_up_num = static_cast<std::size_t>(weights_num);
+    }
+
+    cudaStream_t stream = nullptr;
 #ifdef OPENACC_ENABLED
-    #pragma acc enter data copyin(weights_ptr[0:weights_num])
+    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+    if (weights_num > 0 && buf.weights_up_dev) {
+        CUDA_MEMCPY_ASYNC(buf.weights_up_dev, weights_ptr, weights_bytes,
+                          cudaMemcpyHostToDevice, stream);
+    }
+
+#ifdef OPENACC_ENABLED
+    if (weights_num > 0 && buf.weights_up_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_bytes);
+        CUDA_ACC_MAP_CONST(weights_ptr, buf.weights_up_dev, weights_bytes);
+    }
+#endif
 #endif
 
 #if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
@@ -776,7 +803,17 @@ void SolvationEnergyCompute::upward_pass()
                 cudaFree(exact_idx_y_dev);
                 cudaFree(exact_idx_z_dev);
                 cudaFree(denominator_dev);
+                #ifdef USE_CUDA_CC
+                if (buf.weights_up_dev) {
+    #ifdef OPENACC_ENABLED
+                    CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_bytes);
+    #endif
+                    CUDA_FREE_AND_NULL(buf.weights_up_dev);
+                    buf.weights_up_num = 0;
+                }
+                #elif defined(OPENACC_ENABLED)
                 #pragma acc exit data delete(weights_ptr[0:weights_num])
+                #endif
                 return;
             }
         }
@@ -915,7 +952,15 @@ void SolvationEnergyCompute::upward_pass()
         
         } // end parallel region
     } // end loop over nodes
+#ifdef USE_CUDA_CC
+    if (buf.weights_up_dev) {
 #ifdef OPENACC_ENABLED
+        CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_bytes);
+#endif
+        CUDA_FREE_AND_NULL(buf.weights_up_dev);
+        buf.weights_up_num = 0;
+    }
+#elif defined(OPENACC_ENABLED)
     #pragma acc exit data delete(weights_ptr[0:weights_num])
 #endif
 
@@ -962,8 +1007,34 @@ void SolvationEnergyCompute::downward_pass()
     }
 
     
+#ifdef USE_CUDA_CC
+    auto &buf = device_buffers_;
+    const std::size_t weights_bytes = static_cast<std::size_t>(weights_num) * sizeof(double);
+    if (buf.weights_down_num != 0 &&
+        buf.weights_down_num != static_cast<std::size_t>(weights_num)) {
+        CUDA_FREE_AND_NULL(buf.weights_down_dev);
+        buf.weights_down_num = 0;
+    }
+    if (buf.weights_down_num == 0 && weights_num > 0) {
+        CUDA_MALLOC_OR_DIE(&buf.weights_down_dev, weights_bytes);
+        buf.weights_down_num = static_cast<std::size_t>(weights_num);
+    }
+
+    cudaStream_t stream = nullptr;
 #ifdef OPENACC_ENABLED
-#pragma acc enter data copyin(weights_ptr[0:weights_num])
+    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+    if (weights_num > 0 && buf.weights_down_dev) {
+        CUDA_MEMCPY_ASYNC(buf.weights_down_dev, weights_ptr, weights_bytes,
+                          cudaMemcpyHostToDevice, stream);
+    }
+
+#ifdef OPENACC_ENABLED
+    if (weights_num > 0 && buf.weights_down_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_bytes);
+        CUDA_ACC_MAP_CONST(weights_ptr, buf.weights_down_dev, weights_bytes);
+    }
+#endif
 #endif
 
 #if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
@@ -1029,7 +1100,17 @@ void SolvationEnergyCompute::downward_pass()
                 }
             }
             acc_wait(acc_async_sync);
+            #ifdef USE_CUDA_CC
+            if (buf.weights_down_dev) {
+    #ifdef OPENACC_ENABLED
+                CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_bytes);
+    #endif
+                CUDA_FREE_AND_NULL(buf.weights_down_dev);
+                buf.weights_down_num = 0;
+            }
+            #elif defined(OPENACC_ENABLED)
             #pragma acc exit data delete(weights_ptr[0:weights_num])
+            #endif
             return;
         }
         if (require_all) {
@@ -1142,7 +1223,15 @@ void SolvationEnergyCompute::downward_pass()
             solv_eng_ptr[0] += pot_temp_1 + pot_temp_2;
         }
     } //end loop over nodes
+#ifdef USE_CUDA_CC
+    if (buf.weights_down_dev) {
 #ifdef OPENACC_ENABLED
+        CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_bytes);
+#endif
+        CUDA_FREE_AND_NULL(buf.weights_down_dev);
+        buf.weights_down_num = 0;
+    }
+#elif defined(OPENACC_ENABLED)
     #pragma acc exit data delete(weights_ptr[0:weights_num])
 #endif
 
@@ -1155,7 +1244,150 @@ void SolvationEnergyCompute::copyin_clusters_to_device() const
 {
 //    timers_.copyin_clusters_to_device.start();
 
+#ifdef USE_CUDA_CC
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all =
+        (require_all_env && std::strcmp(require_all_env, "0") != 0);
+
+    const double* q_ptr = mol_interp_charge_.data();
+    std::size_t q_num   = mol_interp_charge_.size();
+    
+    const double* p_ptr    = elem_interp_potential_.data();
+    const double* p_dx_ptr = elem_interp_potential_dx_.data();
+    const double* p_dy_ptr = elem_interp_potential_dy_.data();
+    const double* p_dz_ptr = elem_interp_potential_dz_.data();
+    
+    std::size_t p_num    = elem_interp_potential_.size();
+    std::size_t p_dx_num = elem_interp_potential_dx_.size();
+    std::size_t p_dy_num = elem_interp_potential_dy_.size();
+    std::size_t p_dz_num = elem_interp_potential_dz_.size();
+
+    const double* solv_eng_ptr = solv_eng_vec_.data();
+    std::size_t solv_eng_num   = solv_eng_vec_.size();
+
+    auto &buf = device_buffers_;
+    if (buf.ready &&
+        (buf.q_num != q_num || buf.p_num != p_num || buf.p_dx_num != p_dx_num ||
+         buf.p_dy_num != p_dy_num || buf.p_dz_num != p_dz_num ||
+         buf.solv_eng_num != solv_eng_num)) {
 #ifdef OPENACC_ENABLED
+        CUDA_ACC_UNMAP_IF_PRESENT(q_ptr, q_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_ptr, p_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dx_ptr, p_dx_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dy_ptr, p_dy_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dz_ptr, p_dz_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(solv_eng_ptr, solv_eng_num * sizeof(double));
+#endif
+        CUDA_FREE_AND_NULL(buf.q_dev);
+        CUDA_FREE_AND_NULL(buf.p_dev);
+        CUDA_FREE_AND_NULL(buf.p_dx_dev);
+        CUDA_FREE_AND_NULL(buf.p_dy_dev);
+        CUDA_FREE_AND_NULL(buf.p_dz_dev);
+        CUDA_FREE_AND_NULL(buf.solv_eng_dev);
+        buf = DeviceBuffers{};
+    }
+
+    if (!buf.ready && (q_num > 0 || p_num > 0 || solv_eng_num > 0)) {
+        if (q_num > 0) {
+            CUDA_MALLOC_OR_DIE(&buf.q_dev, q_num * sizeof(double));
+            buf.q_num = q_num;
+        }
+        if (p_num > 0) {
+            CUDA_MALLOC_OR_DIE(&buf.p_dev, p_num * sizeof(double));
+            buf.p_num = p_num;
+        }
+        if (p_dx_num > 0) {
+            CUDA_MALLOC_OR_DIE(&buf.p_dx_dev, p_dx_num * sizeof(double));
+            buf.p_dx_num = p_dx_num;
+        }
+        if (p_dy_num > 0) {
+            CUDA_MALLOC_OR_DIE(&buf.p_dy_dev, p_dy_num * sizeof(double));
+            buf.p_dy_num = p_dy_num;
+        }
+        if (p_dz_num > 0) {
+            CUDA_MALLOC_OR_DIE(&buf.p_dz_dev, p_dz_num * sizeof(double));
+            buf.p_dz_num = p_dz_num;
+        }
+        if (solv_eng_num > 0) {
+            CUDA_MALLOC_OR_DIE(&buf.solv_eng_dev, solv_eng_num * sizeof(double));
+            buf.solv_eng_num = solv_eng_num;
+        }
+        buf.ready = true;
+    }
+
+    cudaStream_t stream = nullptr;
+#ifdef OPENACC_ENABLED
+    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+    if (q_num > 0 && buf.q_dev) {
+        CUDA_MEMCPY_ASYNC(buf.q_dev, q_ptr, q_num * sizeof(double),
+                          cudaMemcpyHostToDevice, stream);
+    }
+    if (p_num > 0 && buf.p_dev) {
+        CUDA_MEMCPY_ASYNC(buf.p_dev, p_ptr, p_num * sizeof(double),
+                          cudaMemcpyHostToDevice, stream);
+    }
+    if (p_dx_num > 0 && buf.p_dx_dev) {
+        CUDA_MEMCPY_ASYNC(buf.p_dx_dev, p_dx_ptr, p_dx_num * sizeof(double),
+                          cudaMemcpyHostToDevice, stream);
+    }
+    if (p_dy_num > 0 && buf.p_dy_dev) {
+        CUDA_MEMCPY_ASYNC(buf.p_dy_dev, p_dy_ptr, p_dy_num * sizeof(double),
+                          cudaMemcpyHostToDevice, stream);
+    }
+    if (p_dz_num > 0 && buf.p_dz_dev) {
+        CUDA_MEMCPY_ASYNC(buf.p_dz_dev, p_dz_ptr, p_dz_num * sizeof(double),
+                          cudaMemcpyHostToDevice, stream);
+    }
+    if (solv_eng_num > 0 && buf.solv_eng_dev) {
+        CUDA_MEMCPY_ASYNC(buf.solv_eng_dev, solv_eng_ptr,
+                          solv_eng_num * sizeof(double),
+                          cudaMemcpyHostToDevice, stream);
+    }
+
+#ifdef OPENACC_ENABLED
+    if (q_num > 0 && buf.q_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(q_ptr, q_num * sizeof(double));
+        CUDA_ACC_MAP_CONST(q_ptr, buf.q_dev, q_num * sizeof(double));
+    }
+    if (p_num > 0 && buf.p_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(p_ptr, p_num * sizeof(double));
+        CUDA_ACC_MAP_CONST(p_ptr, buf.p_dev, p_num * sizeof(double));
+    }
+    if (p_dx_num > 0 && buf.p_dx_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dx_ptr, p_dx_num * sizeof(double));
+        CUDA_ACC_MAP_CONST(p_dx_ptr, buf.p_dx_dev, p_dx_num * sizeof(double));
+    }
+    if (p_dy_num > 0 && buf.p_dy_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dy_ptr, p_dy_num * sizeof(double));
+        CUDA_ACC_MAP_CONST(p_dy_ptr, buf.p_dy_dev, p_dy_num * sizeof(double));
+    }
+    if (p_dz_num > 0 && buf.p_dz_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dz_ptr, p_dz_num * sizeof(double));
+        CUDA_ACC_MAP_CONST(p_dz_ptr, buf.p_dz_dev, p_dz_num * sizeof(double));
+    }
+    if (solv_eng_num > 0 && buf.solv_eng_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(solv_eng_ptr, solv_eng_num * sizeof(double));
+        CUDA_ACC_MAP_CONST(solv_eng_ptr, buf.solv_eng_dev,
+                           solv_eng_num * sizeof(double));
+    }
+#endif
+
+    CUDA_SYNC_AND_CHECK();
+
+    if (require_all) {
+        if (!buf.ready ||
+            (q_num > 0 && !buf.q_dev) ||
+            (p_num > 0 && !buf.p_dev) ||
+            (p_dx_num > 0 && !buf.p_dx_dev) ||
+            (p_dy_num > 0 && !buf.p_dy_dev) ||
+            (p_dz_num > 0 && !buf.p_dz_dev) ||
+            (solv_eng_num > 0 && !buf.solv_eng_dev)) {
+            std::cerr << "[CUDA_SOLVATION] require_all set but device buffers not ready.\n";
+            std::exit(1);
+        }
+    }
+#elif defined(OPENACC_ENABLED)
     const double* q_ptr = mol_interp_charge_.data();
     std::size_t q_num   = mol_interp_charge_.size();
     
@@ -1185,7 +1417,53 @@ void SolvationEnergyCompute::delete_clusters_from_device() const
 {
 //    timers_.delete_clusters_from_device.start();
 
+#ifdef USE_CUDA_CC
+    const double* q_ptr = mol_interp_charge_.data();
+    std::size_t q_num   = mol_interp_charge_.size();
+    
+    const double* p_ptr    = elem_interp_potential_.data();
+    const double* p_dx_ptr = elem_interp_potential_dx_.data();
+    const double* p_dy_ptr = elem_interp_potential_dy_.data();
+    const double* p_dz_ptr = elem_interp_potential_dz_.data();
+    
+    std::size_t p_num    = elem_interp_potential_.size();
+    std::size_t p_dx_num = elem_interp_potential_dx_.size();
+    std::size_t p_dy_num = elem_interp_potential_dy_.size();
+    std::size_t p_dz_num = elem_interp_potential_dz_.size();
+
+    const double* solv_eng_ptr = solv_eng_vec_.data();
+    std::size_t solv_eng_num   = solv_eng_vec_.size();
+
+    auto &buf = device_buffers_;
+    if (buf.ready) {
+        cudaStream_t stream = nullptr;
 #ifdef OPENACC_ENABLED
+        stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+        if (solv_eng_num > 0 && buf.solv_eng_dev) {
+            CUDA_MEMCPY_ASYNC(solv_eng_vec_.data(), buf.solv_eng_dev,
+                              solv_eng_num * sizeof(double),
+                              cudaMemcpyDeviceToHost, stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+        }
+
+#ifdef OPENACC_ENABLED
+        CUDA_ACC_UNMAP_IF_PRESENT(q_ptr, q_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_ptr, p_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dx_ptr, p_dx_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dy_ptr, p_dy_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(p_dz_ptr, p_dz_num * sizeof(double));
+        CUDA_ACC_UNMAP_IF_PRESENT(solv_eng_ptr, solv_eng_num * sizeof(double));
+#endif
+        CUDA_FREE_AND_NULL(buf.q_dev);
+        CUDA_FREE_AND_NULL(buf.p_dev);
+        CUDA_FREE_AND_NULL(buf.p_dx_dev);
+        CUDA_FREE_AND_NULL(buf.p_dy_dev);
+        CUDA_FREE_AND_NULL(buf.p_dz_dev);
+        CUDA_FREE_AND_NULL(buf.solv_eng_dev);
+        buf = DeviceBuffers{};
+    }
+#elif defined(OPENACC_ENABLED)
     const double* q_ptr = mol_interp_charge_.data();
     std::size_t q_num   = mol_interp_charge_.size();
     
