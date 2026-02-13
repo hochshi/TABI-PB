@@ -10,6 +10,10 @@
 #include "params.h"
 #include "timer.h"
 
+#ifdef USE_CUDA_CC
+#include "cuda_state.h"
+#endif
+
 struct Timers;
 struct Timers_Output;
 
@@ -38,7 +42,18 @@ private:
     double pot_max_;
     double pot_normal_min_;
     double pot_normal_max_;
-    
+
+#ifdef USE_CUDA_CC
+    class DeviceBuffers {
+        friend class Output;
+    private:
+        double* potential_dev = nullptr;
+        std::size_t potential_num = 0;
+    };
+
+    mutable DeviceBuffers device_buffers_;
+    mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+#endif
 
 public:
 

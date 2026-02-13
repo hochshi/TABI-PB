@@ -48,7 +48,7 @@ private:
   bool read_msms_file(const std::string &);
   bool read_ply_file(const std::string &filepath);
   bool file_exists(const std::string &name);
-  void update_source_term_on_host() const;
+  void update_source_term_on_host();
 
 public:
   Elements(const class Molecule &, const struct Params &,

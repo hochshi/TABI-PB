@@ -17,6 +17,16 @@
 
 #ifdef USE_CUDA_CC
 #include <cuda_runtime.h>
+#include "cuda_helpers.h"
+#endif
+
+#ifdef OPENACC_ENABLED
+#include <openacc.h>
+#endif
+
+#ifdef USE_CUDA_CC
+#include <cuda_runtime.h>
+#include "cuda_helpers.h"
 #include "output_cuda.h"
 #endif
 
@@ -163,10 +173,47 @@ void Output::compute_solvation_energy()
     
     const double* __restrict potential_ptr = potential_.data();
     std::size_t potential_num = potential_.size();
-    
-#ifdef OPENACC_ENABLED
-    #pragma acc enter data copyin(potential_ptr[0:potential_num])
+
 #ifdef USE_CUDA_CC
+    auto &buf = device_buffers_;
+    if (buf.potential_num != 0 && buf.potential_num != potential_num) {
+        CUDA_FREE_AND_NULL(buf.potential_dev);
+        buf.potential_num = 0;
+    }
+    if (buf.potential_num == 0 && potential_num > 0) {
+        CUDA_MALLOC_OR_DIE(&buf.potential_dev, potential_num * sizeof(double));
+        buf.potential_num = potential_num;
+    }
+
+    cudaStream_t stream = nullptr;
+#ifdef OPENACC_ENABLED
+    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+    CUDA_MEMCPY_ASYNC(buf.potential_dev, potential_ptr,
+                      potential_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+#ifdef OPENACC_ENABLED
+    CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
+    CUDA_ACC_MAP_CONST(potential_ptr, buf.potential_dev,
+                       potential_num * sizeof(double));
+#endif
+    CUDA_SYNC_AND_CHECK();
+    device_state_ = CudaDeviceState::DeviceMapped;
+#endif
+#ifdef USE_CUDA_CC
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        if (require_all && potential_num > 0) {
+            if (!buf.potential_dev || buf.potential_num != potential_num) {
+                std::cerr << "[CUDA_OUTPUT] require_all set but potential buffer not ready. "
+                          << "Aborting to avoid OpenACC fallback.\n";
+                std::exit(1);
+            }
+        }
+    }
+#endif
+#ifdef OPENACC_ENABLED
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -219,9 +266,18 @@ void Output::compute_solvation_energy()
             check(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream)),
                   "cudaStreamSynchronize solvation_energy");
             cudaFree(energy_dev);
-            #pragma acc exit data delete(potential_ptr[0:potential_num])
             solvation_energy_ = solvation_energy;
             timers_.compute_solvation_energy.stop();
+#ifdef USE_CUDA_CC
+#ifdef OPENACC_ENABLED
+            if (buf.potential_dev) {
+                CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
+            }
+#endif
+            CUDA_FREE_AND_NULL(buf.potential_dev);
+            buf.potential_num = 0;
+            device_state_ = CudaDeviceState::HostOnly;
+#endif
             return;
         }
         if (require_all) {
@@ -231,6 +287,9 @@ void Output::compute_solvation_energy()
         }
     }
 #endif
+
+#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
+    #pragma acc enter data copyin(potential_ptr[0:potential_num])
 #endif
     for (std::size_t i = 0; i < num_elems; ++i) {
 
@@ -260,10 +319,9 @@ void Output::compute_solvation_energy()
                               * (L1 * potential_ptr[i] + L2 * potential_ptr[potential_offset_ + i]);
         }
     }
-#ifdef OPENACC_ENABLED
+#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
     #pragma acc exit data delete(potential_ptr[0:potential_num])
 #endif
-
     solvation_energy_ = solvation_energy;
 
     timers_.compute_solvation_energy.stop();
@@ -279,9 +337,48 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     timers_.compute_solvation_energy.start();
     const double* __restrict potential_ptr = potential_.data();
     std::size_t potential_num = potential_.size();
-    
-#ifdef OPENACC_ENABLED
+
+#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
     #pragma acc enter data copyin(potential_ptr[0:potential_num])
+#endif
+#ifdef USE_CUDA_CC
+    auto &buf = device_buffers_;
+    if (buf.potential_num != 0 && buf.potential_num != potential_num) {
+        CUDA_FREE_AND_NULL(buf.potential_dev);
+        buf.potential_num = 0;
+    }
+    if (buf.potential_num == 0 && potential_num > 0) {
+        CUDA_MALLOC_OR_DIE(&buf.potential_dev, potential_num * sizeof(double));
+        buf.potential_num = potential_num;
+    }
+
+    cudaStream_t stream = nullptr;
+#ifdef OPENACC_ENABLED
+    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+    CUDA_MEMCPY_ASYNC(buf.potential_dev, potential_ptr,
+                      potential_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+#ifdef OPENACC_ENABLED
+    CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
+    CUDA_ACC_MAP_CONST(potential_ptr, buf.potential_dev,
+                       potential_num * sizeof(double));
+#endif
+    CUDA_SYNC_AND_CHECK();
+    device_state_ = CudaDeviceState::DeviceMapped;
+#endif
+#ifdef USE_CUDA_CC
+    {
+        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        if (require_all && potential_num > 0) {
+            if (!buf.potential_dev || buf.potential_num != potential_num) {
+                std::cerr << "[CUDA_OUTPUT] require_all set but potential buffer not ready. "
+                          << "Aborting to avoid OpenACC fallback.\n";
+                std::exit(1);
+            }
+        }
+    }
 #endif
     
     class SolvationEnergyCompute solvation_energy(potential_,
@@ -290,8 +387,17 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
                                                   interaction_list, params_.phys_eps_, params_.phys_kappa_);
                                                   
     solvation_energy_ = solvation_energy.compute();
-    
+
+#ifdef USE_CUDA_CC
 #ifdef OPENACC_ENABLED
+    if (buf.potential_dev) {
+        CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
+    }
+#endif
+    CUDA_FREE_AND_NULL(buf.potential_dev);
+    buf.potential_num = 0;
+    device_state_ = CudaDeviceState::HostOnly;
+#elif defined(OPENACC_ENABLED)
     #pragma acc exit data delete(potential_ptr[0:potential_num])
 #endif
 

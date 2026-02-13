@@ -21,9 +21,12 @@
 #include "elements.h"
 #include "source_term_compute.h"
 #ifdef USE_CUDA_CC
-#include <openacc.h>
-#include <cuda_runtime.h>
+#include "cuda_helpers.h"
 #include "elements_cuda.h"
+#endif
+
+#ifdef OPENACC_ENABLED
+#include <openacc.h>
 #endif
 
 static double triangle_area(std::array<std::array<double, 3>, 3> v);
@@ -665,78 +668,168 @@ void Elements::copyin_to_device() const {
   const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
   const bool require_all =
       (require_all_env && std::strcmp(require_all_env, "0") != 0);
-  if (require_all) {
-    if (cuda_ptrs_.ready) {
-      timers_.copyin_to_device.stop();
-      return;
-    }
+  const std::size_t num = num_;
+  const std::size_t x_num = x_.size();
+  const std::size_t y_num = y_.size();
+  const std::size_t z_num = z_.size();
+  const std::size_t nx_num = nx_.size();
+  const std::size_t ny_num = ny_.size();
+  const std::size_t nz_num = nz_.size();
+  const std::size_t area_num = area_.size();
+  const std::size_t source_term_num = source_term_.size();
+  const std::size_t tq_num = target_charge_.size();
+  const std::size_t tq_dx_num = target_charge_dx_.size();
+  const std::size_t tq_dy_num = target_charge_dy_.size();
+  const std::size_t tq_dz_num = target_charge_dz_.size();
+  const std::size_t sq_num = source_charge_.size();
+  const std::size_t sq_dx_num = source_charge_dx_.size();
+  const std::size_t sq_dy_num = source_charge_dy_.size();
+  const std::size_t sq_dz_num = source_charge_dz_.size();
 
-    CudaPtrs ptrs;
-    const std::size_t num = num_;
+  if (x_num != num || y_num != num || z_num != num ||
+      nx_num != num || ny_num != num || nz_num != num ||
+      area_num != num ||
+      tq_num != num || tq_dx_num != num || tq_dy_num != num || tq_dz_num != num ||
+      sq_num != num || sq_dx_num != num || sq_dy_num != num || sq_dz_num != num ||
+      source_term_num != 2 * num) {
+    std::fprintf(stderr,
+                 "[CUDA_ELEMENTS] size mismatch: num=%zu x=%zu y=%zu z=%zu "
+                 "nx=%zu ny=%zu nz=%zu area=%zu source_term=%zu "
+                 "tq=%zu tq_dx=%zu tq_dy=%zu tq_dz=%zu "
+                 "sq=%zu sq_dx=%zu sq_dy=%zu sq_dz=%zu\n",
+                 num, x_num, y_num, z_num, nx_num, ny_num, nz_num, area_num,
+                 source_term_num, tq_num, tq_dx_num, tq_dy_num, tq_dz_num,
+                 sq_num, sq_dx_num, sq_dy_num, sq_dz_num);
+    std::abort();
+  }
+
+  auto &ptrs = cuda_ptrs_;
+  if (ptrs.ready && ptrs.num != num) {
+    CUDA_FREE_AND_NULL(ptrs.x);
+    CUDA_FREE_AND_NULL(ptrs.y);
+    CUDA_FREE_AND_NULL(ptrs.z);
+    CUDA_FREE_AND_NULL(ptrs.nx);
+    CUDA_FREE_AND_NULL(ptrs.ny);
+    CUDA_FREE_AND_NULL(ptrs.nz);
+    CUDA_FREE_AND_NULL(ptrs.area);
+    CUDA_FREE_AND_NULL(ptrs.source_term);
+    CUDA_FREE_AND_NULL(ptrs.target_q);
+    CUDA_FREE_AND_NULL(ptrs.target_q_dx);
+    CUDA_FREE_AND_NULL(ptrs.target_q_dy);
+    CUDA_FREE_AND_NULL(ptrs.target_q_dz);
+    CUDA_FREE_AND_NULL(ptrs.source_q);
+    CUDA_FREE_AND_NULL(ptrs.source_q_dx);
+    CUDA_FREE_AND_NULL(ptrs.source_q_dy);
+    CUDA_FREE_AND_NULL(ptrs.source_q_dz);
+    reset_cuda_ptrs_();
+  }
+
+  if (!ptrs.ready && num > 0) {
+    CUDA_MALLOC_OR_DIE(&ptrs.x, x_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.y, y_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.z, z_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.nx, nx_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.ny, ny_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.nz, nz_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.area, area_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.source_term, source_term_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.target_q, tq_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.target_q_dx, tq_dx_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.target_q_dy, tq_dy_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.target_q_dz, tq_dz_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.source_q, sq_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.source_q_dx, sq_dx_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.source_q_dy, sq_dy_num * sizeof(double));
+    CUDA_MALLOC_OR_DIE(&ptrs.source_q_dz, sq_dz_num * sizeof(double));
     ptrs.num = num;
-
-    auto check = [](cudaError_t err, const char* what) {
-      if (err != cudaSuccess) {
-        std::cerr << "[CUDA_ELEMENTS] " << what << " failed: "
-                  << cudaGetErrorString(err) << "\n";
-        std::exit(1);
-      }
-    };
-
-    check(cudaMalloc(&ptrs.x, num * sizeof(double)), "cudaMalloc x");
-    check(cudaMalloc(&ptrs.y, num * sizeof(double)), "cudaMalloc y");
-    check(cudaMalloc(&ptrs.z, num * sizeof(double)), "cudaMalloc z");
-    check(cudaMemcpy(ptrs.x, x_.data(), num * sizeof(double),
-                     cudaMemcpyHostToDevice),
-          "cudaMemcpy x");
-    check(cudaMemcpy(ptrs.y, y_.data(), num * sizeof(double),
-                     cudaMemcpyHostToDevice),
-          "cudaMemcpy y");
-    check(cudaMemcpy(ptrs.z, z_.data(), num * sizeof(double),
-                     cudaMemcpyHostToDevice),
-          "cudaMemcpy z");
-
-    check(cudaMalloc(&ptrs.nx, num * sizeof(double)), "cudaMalloc nx");
-    check(cudaMalloc(&ptrs.ny, num * sizeof(double)), "cudaMalloc ny");
-    check(cudaMalloc(&ptrs.nz, num * sizeof(double)), "cudaMalloc nz");
-    check(cudaMemcpy(ptrs.nx, nx_.data(), num * sizeof(double),
-                     cudaMemcpyHostToDevice),
-          "cudaMemcpy nx");
-    check(cudaMemcpy(ptrs.ny, ny_.data(), num * sizeof(double),
-                     cudaMemcpyHostToDevice),
-          "cudaMemcpy ny");
-    check(cudaMemcpy(ptrs.nz, nz_.data(), num * sizeof(double),
-                     cudaMemcpyHostToDevice),
-          "cudaMemcpy nz");
-
-    check(cudaMalloc(&ptrs.area, num * sizeof(double)), "cudaMalloc area");
-    check(cudaMemcpy(ptrs.area, area_.data(), num * sizeof(double),
-                     cudaMemcpyHostToDevice),
-          "cudaMemcpy area");
-
-    check(cudaMalloc(&ptrs.target_q, num * sizeof(double)),
-          "cudaMalloc target_q");
-    check(cudaMalloc(&ptrs.target_q_dx, num * sizeof(double)),
-          "cudaMalloc target_q_dx");
-    check(cudaMalloc(&ptrs.target_q_dy, num * sizeof(double)),
-          "cudaMalloc target_q_dy");
-    check(cudaMalloc(&ptrs.target_q_dz, num * sizeof(double)),
-          "cudaMalloc target_q_dz");
-    check(cudaMalloc(&ptrs.source_q, num * sizeof(double)),
-          "cudaMalloc source_q");
-    check(cudaMalloc(&ptrs.source_q_dx, num * sizeof(double)),
-          "cudaMalloc source_q_dx");
-    check(cudaMalloc(&ptrs.source_q_dy, num * sizeof(double)),
-          "cudaMalloc source_q_dy");
-    check(cudaMalloc(&ptrs.source_q_dz, num * sizeof(double)),
-          "cudaMalloc source_q_dz");
-
     ptrs.ready = true;
-    cuda_ptrs_ = ptrs;
+  }
+
+  cudaStream_t stream = nullptr;
+#ifdef OPENACC_ENABLED
+  stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
+
+  if (num > 0) {
+    CUDA_MEMCPY_ASYNC(ptrs.x, x_.data(), x_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+    CUDA_MEMCPY_ASYNC(ptrs.y, y_.data(), y_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+    CUDA_MEMCPY_ASYNC(ptrs.z, z_.data(), z_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+    CUDA_MEMCPY_ASYNC(ptrs.nx, nx_.data(), nx_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+    CUDA_MEMCPY_ASYNC(ptrs.ny, ny_.data(), ny_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+    CUDA_MEMCPY_ASYNC(ptrs.nz, nz_.data(), nz_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+    CUDA_MEMCPY_ASYNC(ptrs.area, area_.data(), area_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+    CUDA_MEMCPY_ASYNC(ptrs.source_term, source_term_.data(),
+                      source_term_num * sizeof(double),
+                      cudaMemcpyHostToDevice, stream);
+  }
+
+#ifdef OPENACC_ENABLED
+  CUDA_ACC_UNMAP_IF_PRESENT(x_.data(), x_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(y_.data(), y_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(z_.data(), z_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(nx_.data(), nx_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(ny_.data(), ny_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(nz_.data(), nz_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(area_.data(), area_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(source_term_.data(), source_term_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_.data(), tq_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dx_.data(), tq_dx_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dy_.data(), tq_dy_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dz_.data(), tq_dz_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_.data(), sq_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dx_.data(), sq_dx_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dy_.data(), sq_dy_num * sizeof(double));
+  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dz_.data(), sq_dz_num * sizeof(double));
+
+  CUDA_ACC_MAP_CONST(x_.data(), ptrs.x, x_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(y_.data(), ptrs.y, y_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(z_.data(), ptrs.z, z_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(nx_.data(), ptrs.nx, nx_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(ny_.data(), ptrs.ny, ny_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(nz_.data(), ptrs.nz, nz_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(area_.data(), ptrs.area, area_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(source_term_.data(), ptrs.source_term,
+                     source_term_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(target_charge_.data(), ptrs.target_q, tq_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(target_charge_dx_.data(), ptrs.target_q_dx,
+                     tq_dx_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(target_charge_dy_.data(), ptrs.target_q_dy,
+                     tq_dy_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(target_charge_dz_.data(), ptrs.target_q_dz,
+                     tq_dz_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(source_charge_.data(), ptrs.source_q, sq_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(source_charge_dx_.data(), ptrs.source_q_dx,
+                     sq_dx_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(source_charge_dy_.data(), ptrs.source_q_dy,
+                     sq_dy_num * sizeof(double));
+  CUDA_ACC_MAP_CONST(source_charge_dz_.data(), ptrs.source_q_dz,
+                     sq_dz_num * sizeof(double));
+#endif
+
+  CUDA_SYNC_AND_CHECK();
+
+  if (require_all && num > 0) {
+    if (!ptrs.ready || !ptrs.x || !ptrs.y || !ptrs.z || !ptrs.nx || !ptrs.ny ||
+        !ptrs.nz || !ptrs.area || !ptrs.source_term || !ptrs.target_q ||
+        !ptrs.target_q_dx || !ptrs.target_q_dy || !ptrs.target_q_dz ||
+        !ptrs.source_q || !ptrs.source_q_dx || !ptrs.source_q_dy ||
+        !ptrs.source_q_dz) {
+      std::fprintf(stderr,
+                   "[CUDA_ELEMENTS] copyin missing device buffers under "
+                   "TABIPB_CUDA_REQUIRE_ALL=1\n");
+      std::abort();
+    }
   }
 #endif
 
-#ifdef OPENACC_ENABLED
+#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
   const double *x_ptr = x_.data();
   const double *y_ptr = y_.data();
   const double *z_ptr = z_.data();
@@ -792,8 +885,19 @@ void Elements::copyin_to_device() const {
   timers_.copyin_to_device.stop();
 }
 
-void Elements::update_source_term_on_host() const {
-#ifdef OPENACC_ENABLED
+void Elements::update_source_term_on_host() {
+#if defined(USE_CUDA_CC) && defined(OPENACC_ENABLED)
+  const std::size_t source_term_num = source_term_.size();
+  if (!cuda_ptrs_.ready || source_term_num == 0 || !cuda_ptrs_.source_term) {
+    return;
+  }
+  cudaStream_t stream = nullptr;
+  stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+  CUDA_MEMCPY_ASYNC(source_term_.data(), cuda_ptrs_.source_term,
+                    source_term_num * sizeof(double),
+                    cudaMemcpyDeviceToHost, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+#elif defined(OPENACC_ENABLED)
   const double *source_term_ptr = source_term_.data();
   std::size_t source_term_num = source_term_.size();
 
@@ -805,32 +909,61 @@ void Elements::delete_from_device() const {
   timers_.delete_from_device.start();
 
 #ifdef USE_CUDA_CC
-  const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-  const bool require_all =
-      (require_all_env && std::strcmp(require_all_env, "0") != 0);
-  if (require_all) {
-    if (cuda_ptrs_.ready) {
-      cudaFree(cuda_ptrs_.x);
-      cudaFree(cuda_ptrs_.y);
-      cudaFree(cuda_ptrs_.z);
-      cudaFree(cuda_ptrs_.nx);
-      cudaFree(cuda_ptrs_.ny);
-      cudaFree(cuda_ptrs_.nz);
-      cudaFree(cuda_ptrs_.area);
-      cudaFree(cuda_ptrs_.target_q);
-      cudaFree(cuda_ptrs_.target_q_dx);
-      cudaFree(cuda_ptrs_.target_q_dy);
-      cudaFree(cuda_ptrs_.target_q_dz);
-      cudaFree(cuda_ptrs_.source_q);
-      cudaFree(cuda_ptrs_.source_q_dx);
-      cudaFree(cuda_ptrs_.source_q_dy);
-      cudaFree(cuda_ptrs_.source_q_dz);
-      reset_cuda_ptrs_();
-    }
-  }
-#endif
-
+  if (cuda_ptrs_.ready) {
 #ifdef OPENACC_ENABLED
+    const std::size_t x_num = x_.size();
+    const std::size_t y_num = y_.size();
+    const std::size_t z_num = z_.size();
+    const std::size_t nx_num = nx_.size();
+    const std::size_t ny_num = ny_.size();
+    const std::size_t nz_num = nz_.size();
+    const std::size_t area_num = area_.size();
+    const std::size_t source_term_num = source_term_.size();
+    const std::size_t tq_num = target_charge_.size();
+    const std::size_t tq_dx_num = target_charge_dx_.size();
+    const std::size_t tq_dy_num = target_charge_dy_.size();
+    const std::size_t tq_dz_num = target_charge_dz_.size();
+    const std::size_t sq_num = source_charge_.size();
+    const std::size_t sq_dx_num = source_charge_dx_.size();
+    const std::size_t sq_dy_num = source_charge_dy_.size();
+    const std::size_t sq_dz_num = source_charge_dz_.size();
+
+    CUDA_ACC_UNMAP_IF_PRESENT(x_.data(), x_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(y_.data(), y_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(z_.data(), z_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(nx_.data(), nx_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(ny_.data(), ny_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(nz_.data(), nz_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(area_.data(), area_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(source_term_.data(), source_term_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_.data(), tq_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dx_.data(), tq_dx_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dy_.data(), tq_dy_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dz_.data(), tq_dz_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_.data(), sq_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dx_.data(), sq_dx_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dy_.data(), sq_dy_num * sizeof(double));
+    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dz_.data(), sq_dz_num * sizeof(double));
+#endif
+    CUDA_FREE_AND_NULL(cuda_ptrs_.x);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.y);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.z);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.nx);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.ny);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.nz);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.area);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.source_term);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q_dx);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q_dy);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q_dz);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q_dx);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q_dy);
+    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q_dz);
+    reset_cuda_ptrs_();
+  }
+#elif defined(OPENACC_ENABLED)
   const double *x_ptr = x_.data();
   const double *y_ptr = y_.data();
   const double *z_ptr = z_.data();
