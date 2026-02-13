@@ -6,6 +6,9 @@
 #include "interp_pts.h"
 #include "tree_compute.h"
 
+#ifdef USE_CUDA_CC
+#include "cuda_state.h"
+#endif
 //struct Timers;
 
 class CoulombicEnergyCompute : public TreeCompute
@@ -39,8 +42,33 @@ private:
     
     /* Coulombic energy */
    
-    std::vector<double> coul_eng_vec_; 
+    mutable std::vector<double> coul_eng_vec_; 
     double coulombic_energy_;
+
+#ifdef USE_CUDA_CC
+    class DeviceBuffers {
+        friend class CoulombicEnergyCompute;
+    private:
+        double* q_dev = nullptr;
+        double* p_dev = nullptr;
+        double* coul_eng_dev = nullptr;
+        double* weights_dev = nullptr;
+        int* exact_idx_x_dev = nullptr;
+        int* exact_idx_y_dev = nullptr;
+        int* exact_idx_z_dev = nullptr;
+        double* denominator_dev = nullptr;
+
+        std::size_t q_num = 0;
+        std::size_t p_num = 0;
+        std::size_t coul_eng_num = 0;
+        std::size_t weights_num = 0;
+        std::size_t scratch_num = 0;
+        bool ready = false;
+    };
+
+    mutable DeviceBuffers device_buffers_;
+    mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+#endif
     
     
     void particle_particle_interact(std::array<std::size_t, 2> target_node_particle_idxs,
