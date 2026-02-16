@@ -12,6 +12,7 @@
 #include <openacc.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "cuda_helpers.h"
 #include "cc_cuda.h"
 #include "up_cuda.h"
 #include "be_cuda.h"
@@ -222,8 +223,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
                                   potential_new[0:potential_num]) if (!device_ptrs)
 #ifdef USE_CUDA_CC
     {
-        const bool present_ok = acc_is_present((void*)potential_new, potential_num * sizeof(double)) &&
-                                acc_is_present((void*)potential_temp, potential_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_matrix_vector_(nullptr, potential_new);
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -311,9 +311,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const bool present_ok = acc_is_present((void*)potential_old, potential_num * sizeof(double)) &&
-                                acc_is_present((void*)potential_new, potential_num * sizeof(double)) &&
-                                acc_is_present((void*)potential_temp, potential_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_matrix_vector_(potential_old, potential_new);
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -1076,21 +1074,10 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
         const char* require_pp_env = std::getenv("TABIPB_CUDA_REQUIRE_PP");
         const bool require_cuda_pp = require_all || (require_pp_env && std::strcmp(require_pp_env, "0") != 0);
 
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_nx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_ny_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_nz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_area_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)potential, (num_elements * 2) * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)potential_old, (num_elements * 2) * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)offsets_ptr, offsets_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)sources_ptr, sources_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)element_node_idx_u32_.data(), num_elements * sizeof(std::uint32_t));
+        const bool present_ok =
+            validate_device_buffers_particle_particle_() &&
+            cuda_pointer_mapped(potential, (num_elements * 2) * sizeof(double)) &&
+            cuda_pointer_mapped(potential_old, (num_elements * 2) * sizeof(double));
 
         if (require_cuda_pp && !present_ok) {
             std::cerr << "[CUDA_PP] require set but device pointers not present. "
@@ -1335,36 +1322,10 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
     const bool use_fused = require_fused || (fused_env && std::strcmp(fused_env, "0") != 0);
 #ifdef USE_CUDA_CC
     if (include_pp && use_fused) {
-        bool present_ok = true;
-        std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
-        std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node) * num_nodes;
-        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_nx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_ny_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_nz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_area_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)potential, (num_elements * 2) * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)potential_old, (num_elements * 2) * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)element_node_idx_ptr, num_elements * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)pp_offsets_ptr, pp_offsets_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)pp_sources_ptr, pp_sources_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)pc_offsets_ptr, pc_offsets_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)pc_sources_ptr, pc_sources_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
+        const bool present_ok =
+            validate_device_buffers_particle_cluster_(true) &&
+            cuda_pointer_mapped(potential, (num_elements * 2) * sizeof(double)) &&
+            cuda_pointer_mapped(potential_old, (num_elements * 2) * sizeof(double));
 
         if (require_fused && !present_ok) {
             std::cerr << "[CUDA_PPPC] require set but device pointers not present. "
@@ -1443,27 +1404,9 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
             return;
         }
     } else if (!include_pp) {
-        bool present_ok = true;
-        std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
-        std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node) * num_nodes;
-        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)potential, (num_elements * 2) * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)element_node_idx_ptr, num_elements * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)pc_offsets_ptr, pc_offsets_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)pc_sources_ptr, pc_sources_num * sizeof(std::uint32_t));
+        const bool present_ok =
+            validate_device_buffers_particle_cluster_(false) &&
+            cuda_pointer_mapped(potential, (num_elements * 2) * sizeof(double));
 
         if (require_cuda_pc && !present_ok) {
             std::cerr << "[CUDA_PC] require set but device pointers not present. "
@@ -2124,6 +2067,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
 
     int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
     int num_charges_per_node    = num_charges_per_node_;
+    const std::size_t num_elements = elements_.num();
 
     double eps    = params_.phys_eps_;
     double kappa  = params_.phys_kappa_;
@@ -2197,34 +2141,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         int n3 = n2 * n;
 
 #ifdef USE_CUDA_CC
-        bool present_ok = true;
-        std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
-        std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node) * num_nodes;
-        std::size_t num_elements = elements_.num();
-        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dz_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)cp_offsets_ptr, cp_offsets_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)cp_sources_ptr, cp_sources_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)cc_offsets_ptr, cc_offsets_num * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)cc_sources_ptr, cc_sources_num * sizeof(std::uint32_t));
+        const bool present_ok = validate_device_buffers_cluster_mixed_();
 
         if (require_cuda_cc && !present_ok) {
             std::cerr << "[CUDA_CC] require set but device pointers not present. "
@@ -2954,45 +2871,7 @@ void BoundaryElement::upward_pass()
         std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node_) * num_nodes;
         std::size_t num_elements = elements_.num();
 
-        const bool present_clusters_x = acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
-        const bool present_clusters_y = acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
-        const bool present_clusters_z = acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
-        const bool present_clusters_q = acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
-        const bool present_clusters_q_dx = acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
-        const bool present_clusters_q_dy = acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
-        const bool present_clusters_q_dz = acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
-        const bool present_weights = acc_is_present((void*)weights_ptr, static_cast<std::size_t>(num_interp_pts_per_node) * sizeof(double));
-        const bool present_elements_x = acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
-        const bool present_elements_y = acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
-        const bool present_elements_z = acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
-        const bool present_sources_q = acc_is_present((void*)sources_q_ptr, num_elements * sizeof(double));
-        const bool present_sources_q_dx = acc_is_present((void*)sources_q_dx_ptr, num_elements * sizeof(double));
-        const bool present_sources_q_dy = acc_is_present((void*)sources_q_dy_ptr, num_elements * sizeof(double));
-        const bool present_sources_q_dz = acc_is_present((void*)sources_q_dz_ptr, num_elements * sizeof(double));
-        const bool present_node_begin = acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
-        const bool present_node_end = acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
-        const bool present_level_nodes = acc_is_present((void*)level_nodes_ptr, level_nodes_num * sizeof(std::size_t));
-
-        bool present_ok = present_clusters_x && present_clusters_y && present_clusters_z &&
-                          present_clusters_q && present_clusters_q_dx && present_clusters_q_dy && present_clusters_q_dz &&
-                          present_weights &&
-                          present_elements_x && present_elements_y && present_elements_z &&
-                          present_sources_q && present_sources_q_dx && present_sources_q_dy && present_sources_q_dz &&
-                          present_node_begin && present_node_end && present_level_nodes;
-        if (use_split) {
-            const bool present_exact_x = acc_is_present((void*)exact_idx_x_ptr, max_particles * sizeof(int));
-            const bool present_exact_y = acc_is_present((void*)exact_idx_y_ptr, max_particles * sizeof(int));
-            const bool present_exact_z = acc_is_present((void*)exact_idx_z_ptr, max_particles * sizeof(int));
-            const bool present_denom = acc_is_present((void*)denominator_ptr, max_particles * sizeof(double));
-            present_ok = present_ok && present_exact_x && present_exact_y && present_exact_z && present_denom;
-            if (debug_cuda_upward) {
-                std::cerr << "[CUDA_UP] present exact_x=" << present_exact_x
-                          << " exact_y=" << present_exact_y
-                          << " exact_z=" << present_exact_z
-                          << " denom=" << present_denom
-                          << "\n";
-            }
-        }
+        bool present_ok = validate_device_buffers_upward_(use_split);
 
         if (require_cuda_upward && !present_ok) {
             std::cerr << "[CUDA_UP] require set but device pointers not present. "
@@ -3007,28 +2886,6 @@ void BoundaryElement::upward_pass()
                       << " level_nodes=" << level_nodes_num
                       << " num_nodes=" << num_nodes
                       << " num_elements=" << num_elements
-                      << "\n";
-            std::cerr << "[CUDA_UP] present clusters_x=" << present_clusters_x
-                      << " clusters_y=" << present_clusters_y
-                      << " clusters_z=" << present_clusters_z
-                      << " clusters_q=" << present_clusters_q
-                      << " clusters_q_dx=" << present_clusters_q_dx
-                      << " clusters_q_dy=" << present_clusters_q_dy
-                      << " clusters_q_dz=" << present_clusters_q_dz
-                      << "\n";
-            std::cerr << "[CUDA_UP] present weights=" << present_weights
-                      << " elements_x=" << present_elements_x
-                      << " elements_y=" << present_elements_y
-                      << " elements_z=" << present_elements_z
-                      << "\n";
-            std::cerr << "[CUDA_UP] present sources_q=" << present_sources_q
-                      << " sources_q_dx=" << present_sources_q_dx
-                      << " sources_q_dy=" << present_sources_q_dy
-                      << " sources_q_dz=" << present_sources_q_dz
-                      << "\n";
-            std::cerr << "[CUDA_UP] present node_begin=" << present_node_begin
-                      << " node_end=" << present_node_end
-                      << " level_nodes=" << present_level_nodes
                       << "\n";
             std::cerr << "[CUDA_UP] present_ok=" << present_ok << "\n";
         }
@@ -3365,26 +3222,7 @@ void BoundaryElement::downward_pass(double* __restrict potential)
         const std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
         const std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node_) * num_nodes;
         const std::size_t num_elements = elements_.num();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dz_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)weights_ptr, static_cast<std::size_t>(num_interp_pts_per_node) * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)potential, (potential_offset + num_elements) * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)level_nodes_ptr, level_nodes_num * sizeof(std::size_t));
+        const bool present_ok = validate_device_buffers_downward_(potential);
 
         if (present_ok) {
             acc_wait(acc_async_sync);
@@ -3684,10 +3522,7 @@ void BoundaryElement::clear_cluster_charges()
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    const bool present_ok = acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double)) &&
-                            acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double)) &&
-                            acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double)) &&
-                            acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
+    const bool present_ok = validate_device_buffers_clear_cluster_charges_();
     if (present_ok) {
         acc_wait(acc_async_sync);
         void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -3737,10 +3572,7 @@ void BoundaryElement::clear_cluster_potentials()
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    const bool present_ok = acc_is_present((void*)clusters_p_ptr, num_potentials * sizeof(double)) &&
-                            acc_is_present((void*)clusters_p_dx_ptr, num_potentials * sizeof(double)) &&
-                            acc_is_present((void*)clusters_p_dy_ptr, num_potentials * sizeof(double)) &&
-                            acc_is_present((void*)clusters_p_dz_ptr, num_potentials * sizeof(double));
+    const bool present_ok = validate_device_buffers_clear_cluster_potentials_();
     if (present_ok) {
         acc_wait(acc_async_sync);
         void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -3780,6 +3612,144 @@ void BoundaryElement::reset_device_buffers_() const
 {
     device_buffers_ = DeviceBuffers{};
     device_state_ = CudaDeviceState::HostOnly;
+}
+
+bool BoundaryElement::validate_device_buffers_matrix_vector_(
+    const double* potential_old, const double* potential_new) const
+{
+    if (device_state_ != CudaDeviceState::DeviceMapped || !device_buffers_.ready) {
+        return false;
+    }
+    if (!device_buffers_.potential_temp) {
+        return false;
+    }
+#ifdef OPENACC_ENABLED
+    const std::size_t potential_num = potential_.size();
+    if (potential_num > 0) {
+        if (!cuda_pointer_mapped(potential_new, potential_num * sizeof(double))) {
+            return false;
+        }
+        if (potential_old &&
+            !cuda_pointer_mapped(potential_old, potential_num * sizeof(double))) {
+            return false;
+        }
+    }
+#else
+    (void)potential_old;
+    (void)potential_new;
+#endif
+    return true;
+}
+
+bool BoundaryElement::validate_device_buffers_particle_particle_() const
+{
+    const auto& b = device_buffers_;
+    return device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
+           elements_.cuda_device_ready() && interp_pts_.cuda_device_ready() &&
+           b.elements_x && b.elements_y && b.elements_z &&
+           b.elements_nx && b.elements_ny && b.elements_nz && b.elements_area &&
+           b.node_begin && b.node_end && b.element_node_idx &&
+           b.pp_offsets && b.pp_sources;
+}
+
+bool BoundaryElement::validate_device_buffers_particle_cluster_(bool include_pp) const
+{
+    const auto& b = device_buffers_;
+    const bool base_ok =
+        device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
+        elements_.cuda_device_ready() && interp_pts_.cuda_device_ready() &&
+        b.clusters_x && b.clusters_y && b.clusters_z &&
+        b.clusters_q && b.clusters_q_dx && b.clusters_q_dy && b.clusters_q_dz &&
+        b.elements_x && b.elements_y && b.elements_z &&
+        b.targets_q && b.targets_q_dx && b.targets_q_dy && b.targets_q_dz &&
+        b.element_node_idx && b.pc_offsets && b.pc_sources;
+    if (!base_ok) {
+        return false;
+    }
+    if (include_pp) {
+        return b.elements_nx && b.elements_ny && b.elements_nz && b.elements_area &&
+               b.node_begin && b.node_end &&
+               b.pp_offsets && b.pp_sources;
+    }
+    return true;
+}
+
+bool BoundaryElement::validate_device_buffers_cluster_mixed_() const
+{
+    const auto& b = device_buffers_;
+    return device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
+           elements_.cuda_device_ready() && interp_pts_.cuda_device_ready() &&
+           b.clusters_x && b.clusters_y && b.clusters_z &&
+           b.clusters_q && b.clusters_q_dx && b.clusters_q_dy && b.clusters_q_dz &&
+           b.clusters_p && b.clusters_p_dx && b.clusters_p_dy && b.clusters_p_dz &&
+           b.elements_x && b.elements_y && b.elements_z &&
+           b.sources_q && b.sources_q_dx && b.sources_q_dy && b.sources_q_dz &&
+           b.node_begin && b.node_end &&
+           b.cp_offsets && b.cp_sources && b.cc_offsets && b.cc_sources;
+}
+
+bool BoundaryElement::validate_device_buffers_upward_(bool use_split) const
+{
+    const auto& b = device_buffers_;
+    bool ok = device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
+              elements_.cuda_device_ready() && interp_pts_.cuda_device_ready() &&
+              b.clusters_x && b.clusters_y && b.clusters_z &&
+              b.clusters_q && b.clusters_q_dx && b.clusters_q_dy && b.clusters_q_dz &&
+              b.weights && b.elements_x && b.elements_y && b.elements_z &&
+              b.sources_q && b.sources_q_dx && b.sources_q_dy && b.sources_q_dz &&
+              b.node_begin && b.node_end && b.level_nodes;
+    if (!ok) {
+        return false;
+    }
+#ifdef OPENACC_ENABLED
+    if (use_split) {
+        const std::size_t n = exact_idx_x_.size();
+        return cuda_pointer_mapped(exact_idx_x_.data(), n * sizeof(int)) &&
+               cuda_pointer_mapped(exact_idx_y_.data(), n * sizeof(int)) &&
+               cuda_pointer_mapped(exact_idx_z_.data(), n * sizeof(int)) &&
+               cuda_pointer_mapped(denominator_.data(), n * sizeof(double));
+    }
+#else
+    (void)use_split;
+#endif
+    return true;
+}
+
+bool BoundaryElement::validate_device_buffers_downward_(const double* potential) const
+{
+    const auto& b = device_buffers_;
+    if (!(device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
+          elements_.cuda_device_ready() && interp_pts_.cuda_device_ready() &&
+          b.clusters_x && b.clusters_y && b.clusters_z &&
+          b.clusters_p && b.clusters_p_dx && b.clusters_p_dy && b.clusters_p_dz &&
+          b.elements_x && b.elements_y && b.elements_z &&
+          b.targets_q && b.targets_q_dx && b.targets_q_dy && b.targets_q_dz &&
+          b.weights && b.node_begin && b.node_end && b.level_nodes)) {
+        return false;
+    }
+#ifdef OPENACC_ENABLED
+    const std::size_t num = potential_.size();
+    if (num > 0 && !cuda_pointer_mapped(potential, num * sizeof(double))) {
+        return false;
+    }
+#else
+    (void)potential;
+#endif
+    return true;
+}
+
+bool BoundaryElement::validate_device_buffers_clear_cluster_charges_() const
+{
+    const auto& b = device_buffers_;
+    return device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
+           b.clusters_q && b.clusters_q_dx && b.clusters_q_dy && b.clusters_q_dz;
+}
+
+bool BoundaryElement::validate_device_buffers_clear_cluster_potentials_() const
+{
+    const auto& b = device_buffers_;
+    return device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
+           b.clusters_p && b.clusters_p_dx && b.clusters_p_dy && b.clusters_p_dz;
 }
 
 void BoundaryElement::cache_device_buffers_() const
@@ -3859,60 +3829,60 @@ void BoundaryElement::cache_device_buffers_() const
 
     bool present_ok = true;
     if (num_interp_pts > 0) {
-        present_ok = present_ok && acc_is_present((void*)clusters_x_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_y_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_z_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_x_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_y_ptr, num_interp_pts * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_z_ptr, num_interp_pts * sizeof(double));
     }
     if (num_charges > 0) {
-        present_ok = present_ok && acc_is_present((void*)clusters_q_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_q_dz_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)clusters_p_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_q_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_q_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_q_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_q_dz_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_p_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_p_dx_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_p_dy_ptr, num_charges * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(clusters_p_dz_ptr, num_charges * sizeof(double));
     }
     if (num_elements > 0) {
-        present_ok = present_ok && acc_is_present((void*)elements_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_nx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_ny_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_nz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elements_area_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)targets_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)sources_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(elements_x_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(elements_y_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(elements_z_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(elements_nx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(elements_ny_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(elements_nz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(elements_area_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(targets_q_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(targets_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(targets_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(targets_q_dz_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(sources_q_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(sources_q_dx_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(sources_q_dy_ptr, num_elements * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(sources_q_dz_ptr, num_elements * sizeof(double));
     }
     if (weights_num > 0) {
-        present_ok = present_ok && acc_is_present((void*)weights_ptr, weights_num * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(weights_ptr, weights_num * sizeof(double));
     }
     if (potential_temp_num > 0) {
-        present_ok = present_ok && acc_is_present((void*)potential_temp_ptr, potential_temp_num * sizeof(double));
+        present_ok = present_ok && cuda_pointer_mapped(potential_temp_ptr, potential_temp_num * sizeof(double));
     }
     if (num_nodes > 0) {
-        present_ok = present_ok && acc_is_present((void*)node_begin_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && acc_is_present((void*)node_end_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && cuda_pointer_mapped(node_begin_ptr, num_nodes * sizeof(std::uint32_t));
+        present_ok = present_ok && cuda_pointer_mapped(node_end_ptr, num_nodes * sizeof(std::uint32_t));
     }
     if (element_node_idx_num > 0) {
-        present_ok = present_ok && acc_is_present((void*)element_node_idx_ptr, element_node_idx_num * sizeof(std::uint32_t));
+        present_ok = present_ok && cuda_pointer_mapped(element_node_idx_ptr, element_node_idx_num * sizeof(std::uint32_t));
     }
-    if (pp_offsets_num > 0) present_ok = present_ok && acc_is_present((void*)pp_offsets_ptr, pp_offsets_num * sizeof(std::uint32_t));
-    if (pp_sources_num > 0) present_ok = present_ok && acc_is_present((void*)pp_sources_ptr, pp_sources_num * sizeof(std::uint32_t));
-    if (pc_offsets_num > 0) present_ok = present_ok && acc_is_present((void*)pc_offsets_ptr, pc_offsets_num * sizeof(std::uint32_t));
-    if (pc_sources_num > 0) present_ok = present_ok && acc_is_present((void*)pc_sources_ptr, pc_sources_num * sizeof(std::uint32_t));
-    if (cp_offsets_num > 0) present_ok = present_ok && acc_is_present((void*)cp_offsets_ptr, cp_offsets_num * sizeof(std::uint32_t));
-    if (cp_sources_num > 0) present_ok = present_ok && acc_is_present((void*)cp_sources_ptr, cp_sources_num * sizeof(std::uint32_t));
-    if (cc_offsets_num > 0) present_ok = present_ok && acc_is_present((void*)cc_offsets_ptr, cc_offsets_num * sizeof(std::uint32_t));
-    if (cc_sources_num > 0) present_ok = present_ok && acc_is_present((void*)cc_sources_ptr, cc_sources_num * sizeof(std::uint32_t));
+    if (pp_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(pp_offsets_ptr, pp_offsets_num * sizeof(std::uint32_t));
+    if (pp_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(pp_sources_ptr, pp_sources_num * sizeof(std::uint32_t));
+    if (pc_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(pc_offsets_ptr, pc_offsets_num * sizeof(std::uint32_t));
+    if (pc_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(pc_sources_ptr, pc_sources_num * sizeof(std::uint32_t));
+    if (cp_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(cp_offsets_ptr, cp_offsets_num * sizeof(std::uint32_t));
+    if (cp_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(cp_sources_ptr, cp_sources_num * sizeof(std::uint32_t));
+    if (cc_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(cc_offsets_ptr, cc_offsets_num * sizeof(std::uint32_t));
+    if (cc_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(cc_sources_ptr, cc_sources_num * sizeof(std::uint32_t));
     if (ptrs.level_nodes_num > 0) {
-        present_ok = present_ok && acc_is_present((void*)level_nodes_ptr, ptrs.level_nodes_num * sizeof(std::size_t));
+        present_ok = present_ok && cuda_pointer_mapped(level_nodes_ptr, ptrs.level_nodes_num * sizeof(std::size_t));
     }
 
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
@@ -4032,8 +4002,7 @@ void BoundaryElement::copyin_clusters_to_device() const
             return;
         }
 
-        const auto& elem_ptrs = elements_.device_buffers();
-        if (!elem_ptrs.getReady()) {
+        if (!elements_.cuda_device_ready()) {
             std::cerr << "[CUDA_BE] require_all set but Elements CUDA pointers not ready. "
                       << "Did you call elements.copyin_to_device()?\n";
             std::exit(1);
@@ -4057,28 +4026,15 @@ void BoundaryElement::copyin_clusters_to_device() const
         const std::size_t potential_num = potential_temp_.size();
 
         if (num_interp_pts > 0) {
-#ifdef OPENACC_ENABLED
-            const bool present_x =
-                acc_is_present((void*)interp_pts_.interp_x_ptr(), num_interp_pts * sizeof(double));
-            const bool present_y =
-                acc_is_present((void*)interp_pts_.interp_y_ptr(), num_interp_pts * sizeof(double));
-            const bool present_z =
-                acc_is_present((void*)interp_pts_.interp_z_ptr(), num_interp_pts * sizeof(double));
-            if (!present_x || !present_y || !present_z) {
-                std::cerr << "[CUDA_BE] require_all set but interp_pts buffers not present on device. "
+            if (!interp_pts_.cuda_device_ready()) {
+                std::cerr << "[CUDA_BE] require_all set but interp_pts CUDA buffers are not ready. "
                           << "Did you call interp_pts.copyin_to_device()?\n";
                 std::exit(1);
             }
-
-            ptrs.clusters_x = static_cast<double*>(acc_deviceptr((void*)interp_pts_.interp_x_ptr()));
-            ptrs.clusters_y = static_cast<double*>(acc_deviceptr((void*)interp_pts_.interp_y_ptr()));
-            ptrs.clusters_z = static_cast<double*>(acc_deviceptr((void*)interp_pts_.interp_z_ptr()));
+            ptrs.clusters_x = interp_pts_.device_buffers_.interp_x_dev;
+            ptrs.clusters_y = interp_pts_.device_buffers_.interp_y_dev;
+            ptrs.clusters_z = interp_pts_.device_buffers_.interp_z_dev;
             ptrs.owns_clusters_xyz = false;
-#else
-            std::cerr << "[CUDA_BE] require_all set but OpenACC interop is disabled; "
-                      << "cannot obtain interp_pts device buffers.\n";
-            std::exit(1);
-#endif
         }
 
         if (num_charges > 0) {
@@ -4230,21 +4186,21 @@ void BoundaryElement::copyin_clusters_to_device() const
             }
         }
 
-        ptrs.elements_x = elem_ptrs.getX();
-        ptrs.elements_y = elem_ptrs.getY();
-        ptrs.elements_z = elem_ptrs.getZ();
-        ptrs.elements_nx = elem_ptrs.getNX();
-        ptrs.elements_ny = elem_ptrs.getNY();
-        ptrs.elements_nz = elem_ptrs.getNZ();
-        ptrs.elements_area = elem_ptrs.getArea();
-        ptrs.targets_q = elem_ptrs.getTargetQ();
-        ptrs.targets_q_dx = elem_ptrs.getTargetQDX();
-        ptrs.targets_q_dy = elem_ptrs.getTargetQDY();
-        ptrs.targets_q_dz = elem_ptrs.getTargetQDZ();
-        ptrs.sources_q = elem_ptrs.getSourceQ();
-        ptrs.sources_q_dx = elem_ptrs.getSourceQDX();
-        ptrs.sources_q_dy = elem_ptrs.getSourceQDY();
-        ptrs.sources_q_dz = elem_ptrs.getSourceQDZ();
+        ptrs.elements_x = elements_.device_buffers_.x;
+        ptrs.elements_y = elements_.device_buffers_.y;
+        ptrs.elements_z = elements_.device_buffers_.z;
+        ptrs.elements_nx = elements_.device_buffers_.nx;
+        ptrs.elements_ny = elements_.device_buffers_.ny;
+        ptrs.elements_nz = elements_.device_buffers_.nz;
+        ptrs.elements_area = elements_.device_buffers_.area;
+        ptrs.targets_q = elements_.device_buffers_.target_q;
+        ptrs.targets_q_dx = elements_.device_buffers_.target_q_dx;
+        ptrs.targets_q_dy = elements_.device_buffers_.target_q_dy;
+        ptrs.targets_q_dz = elements_.device_buffers_.target_q_dz;
+        ptrs.sources_q = elements_.device_buffers_.source_q;
+        ptrs.sources_q_dx = elements_.device_buffers_.source_q_dx;
+        ptrs.sources_q_dy = elements_.device_buffers_.source_q_dy;
+        ptrs.sources_q_dz = elements_.device_buffers_.source_q_dz;
 
         ptrs.ready = true;
         device_buffers_ = ptrs;

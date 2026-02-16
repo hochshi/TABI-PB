@@ -92,6 +92,10 @@ inline bool CUDA_ACC_IS_PRESENT(const void* host_ptr, std::size_t bytes) {
     return acc_is_present(const_cast<void*>(host_ptr), bytes) != 0;
 }
 
+inline bool cuda_pointer_mapped(const void* host_ptr, std::size_t bytes) {
+    return CUDA_ACC_IS_PRESENT(host_ptr, bytes);
+}
+
 inline void CUDA_ACC_UNMAP_IF_PRESENT(const void* host_ptr, std::size_t bytes) {
     if (CUDA_ACC_IS_PRESENT(host_ptr, bytes)) {
         acc_unmap_data(const_cast<void*>(host_ptr));
@@ -104,6 +108,10 @@ inline void CUDA_ACC_MAP_CONST(const void* host_ptr, void* dev_ptr,
         return;
     }
     acc_map_data(const_cast<void*>(host_ptr), dev_ptr, bytes);
+}
+#else
+inline bool cuda_pointer_mapped(const void*, std::size_t) {
+    return false;
 }
 #endif
 

@@ -122,24 +122,7 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const std::size_t num_elems = elements_.num();
-        const std::size_t num_atoms = molecule_.num();
-        const std::size_t potential_num = potential_.size();
-        const std::size_t solv_eng_num = solv_eng_vec_.size();
-        const bool present_ok =
-            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dx_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dy_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dz_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)potential_ptr, potential_num * sizeof(double)) &&
-            acc_is_present((void*)solv_eng_ptr, solv_eng_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_particle_particle_();
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -260,26 +243,7 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const std::size_t num_elems = elements_.num();
-        const std::size_t num_mol_interp =
-            static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        const std::size_t num_mol_interp_q = mol_interp_charge_.size();
-        const std::size_t potential_num = potential_.size();
-        const std::size_t solv_eng_num = solv_eng_vec_.size();
-        const bool present_ok =
-            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dx_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dy_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dz_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_q * sizeof(double)) &&
-            acc_is_present((void*)potential_ptr, potential_num * sizeof(double)) &&
-            acc_is_present((void*)solv_eng_ptr, solv_eng_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_particle_cluster_();
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -405,21 +369,7 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const std::size_t num_mols = molecule_.num();
-        const std::size_t num_elem_interp = elem_interp_pts_.num_interp_pts_per_node() * target_tree_.num_nodes();
-        const std::size_t num_elem_pots = elem_interp_potential_.size();
-        const bool present_ok =
-            acc_is_present((void*)mol_x_ptr, num_mols * sizeof(double)) &&
-            acc_is_present((void*)mol_y_ptr, num_mols * sizeof(double)) &&
-            acc_is_present((void*)mol_z_ptr, num_mols * sizeof(double)) &&
-            acc_is_present((void*)mol_q_ptr, num_mols * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_ptr, num_elem_pots * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_pots * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_pots * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_pots * sizeof(double));
+        const bool present_ok = validate_device_buffers_cluster_particle_();
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -550,24 +500,7 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const std::size_t num_elem_interp =
-            static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
-        const std::size_t num_elem_pots = elem_interp_potential_.size();
-        const std::size_t num_mol_interp =
-            static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        const std::size_t num_mol_interp_q = mol_interp_charge_.size();
-        const bool present_ok =
-            acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_ptr, num_elem_pots * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_pots * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_pots * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_pots * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp * sizeof(double)) &&
-            acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_q * sizeof(double));
+        const bool present_ok = validate_device_buffers_cluster_cluster_();
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -731,20 +664,7 @@ void SolvationEnergyCompute::upward_pass()
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const std::size_t num_atoms = molecule_.num();
-        const std::size_t num_mol_interp =
-            static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        const std::size_t num_mol_interp_q = mol_interp_charge_.size();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_q * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)weights_ptr, weights_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_upward_pass_();
         if (present_ok) {
             std::size_t max_particles = 0;
             for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
@@ -1041,30 +961,7 @@ void SolvationEnergyCompute::downward_pass()
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const std::size_t num_elems = elements_.num();
-        const std::size_t num_elem_interp =
-            static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
-        const std::size_t num_elem_interp_p = elem_interp_potential_.size();
-        const std::size_t potential_num = potential_.size();
-        const std::size_t solv_eng_num = solv_eng_vec_.size();
-        const bool present_ok =
-            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dx_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dy_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_q_dz_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_ptr, num_elem_interp_p * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_interp_p * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_interp_p * sizeof(double)) &&
-            acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_interp_p * sizeof(double)) &&
-            acc_is_present((void*)potential_ptr, potential_num * sizeof(double)) &&
-            acc_is_present((void*)solv_eng_ptr, solv_eng_num * sizeof(double)) &&
-            acc_is_present((void*)weights_ptr, weights_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_downward_pass_();
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -1238,6 +1135,77 @@ void SolvationEnergyCompute::downward_pass()
 //    timers_.downward_pass.stop();
 }
 
+#ifdef USE_CUDA_CC
+bool SolvationEnergyCompute::validate_device_buffers_common_() const
+{
+    if (device_state_ != CudaDeviceState::DeviceMapped || !device_buffers_.ready) {
+        return false;
+    }
+    if (!elements_.cuda_device_ready() || !molecule_.cuda_device_ready() ||
+        !elem_interp_pts_.cuda_device_ready() || !mol_interp_pts_.cuda_device_ready()) {
+        return false;
+    }
+
+    const auto& buf = device_buffers_;
+    const std::size_t q_num = mol_interp_charge_.size();
+    const std::size_t p_num = elem_interp_potential_.size();
+    const std::size_t p_dx_num = elem_interp_potential_dx_.size();
+    const std::size_t p_dy_num = elem_interp_potential_dy_.size();
+    const std::size_t p_dz_num = elem_interp_potential_dz_.size();
+    const std::size_t solv_eng_num = solv_eng_vec_.size();
+
+    if (buf.q_num != q_num || buf.p_num != p_num || buf.p_dx_num != p_dx_num ||
+        buf.p_dy_num != p_dy_num || buf.p_dz_num != p_dz_num ||
+        buf.solv_eng_num != solv_eng_num) {
+        return false;
+    }
+    if ((q_num > 0 && !buf.q_dev) ||
+        (p_num > 0 && !buf.p_dev) ||
+        (p_dx_num > 0 && !buf.p_dx_dev) ||
+        (p_dy_num > 0 && !buf.p_dy_dev) ||
+        (p_dz_num > 0 && !buf.p_dz_dev) ||
+        (solv_eng_num > 0 && !buf.solv_eng_dev)) {
+        return false;
+    }
+    return true;
+}
+
+bool SolvationEnergyCompute::validate_device_buffers_particle_particle_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SolvationEnergyCompute::validate_device_buffers_particle_cluster_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SolvationEnergyCompute::validate_device_buffers_cluster_particle_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SolvationEnergyCompute::validate_device_buffers_cluster_cluster_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SolvationEnergyCompute::validate_device_buffers_upward_pass_() const
+{
+    return validate_device_buffers_common_() &&
+           (device_buffers_.weights_up_num ==
+            static_cast<std::size_t>(num_mol_interp_pts_per_node_)) &&
+           (device_buffers_.weights_up_num == 0 || device_buffers_.weights_up_dev != nullptr);
+}
+
+bool SolvationEnergyCompute::validate_device_buffers_downward_pass_() const
+{
+    return validate_device_buffers_common_() &&
+           (device_buffers_.weights_down_num ==
+            static_cast<std::size_t>(num_elem_interp_pts_per_node_)) &&
+           (device_buffers_.weights_down_num == 0 || device_buffers_.weights_down_dev != nullptr);
+}
+#endif
 
 
 void SolvationEnergyCompute::copyin_clusters_to_device() const
@@ -1374,6 +1342,7 @@ void SolvationEnergyCompute::copyin_clusters_to_device() const
 #endif
 
     CUDA_SYNC_AND_CHECK();
+    device_state_ = CudaDeviceState::DeviceMapped;
 
     if (require_all) {
         if (!buf.ready ||
@@ -1462,7 +1431,9 @@ void SolvationEnergyCompute::delete_clusters_from_device() const
         CUDA_FREE_AND_NULL(buf.p_dz_dev);
         CUDA_FREE_AND_NULL(buf.solv_eng_dev);
         buf = DeviceBuffers{};
+        device_state_ = CudaDeviceState::HostOnly;
     }
+    device_state_ = CudaDeviceState::HostOnly;
 #elif defined(OPENACC_ENABLED)
     const double* q_ptr = mol_interp_charge_.data();
     std::size_t q_num   = mol_interp_charge_.size();

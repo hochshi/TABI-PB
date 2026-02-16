@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <iostream>
 
 #ifdef OPENACC_ENABLED
 #include <openacc.h>
@@ -107,6 +108,16 @@ SourceTermCompute::SourceTermCompute(std::vector<double>& source_term,
 void SourceTermCompute::compute()
 {
     SourceTermCompute::copyin_clusters_to_device();
+#if defined(USE_CUDA_CC)
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all =
+        (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    if (require_all && !validate_device_buffers_common_()) {
+        std::cerr << "[CUDA_SOURCE_TERM] require_all set but device buffers not ready. "
+                  << "Aborting to avoid CPU/OpenACC fallback.\n";
+        std::exit(1);
+    }
+#endif
     SourceTermCompute::run();
     SourceTermCompute::delete_clusters_from_device();
 }
@@ -151,20 +162,7 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_elements = elements_.num();
-        std::size_t num_atoms = molecule_.num();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)elem_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)source_term_ptr, source_term_.size() * sizeof(double));
+        const bool present_ok = validate_device_buffers_particle_particle_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
             #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
@@ -284,21 +282,7 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_elements = elements_.num();
-        std::size_t num_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        std::size_t num_charges = mol_interp_charge_.size();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)elem_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)source_term_ptr, source_term_.size() * sizeof(double));
+        const bool present_ok = validate_device_buffers_particle_cluster_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
             #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
@@ -424,21 +408,7 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_elem_interp_pts = static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
-        std::size_t num_elem_interp_potentials = elem_interp_potential_.size();
-        std::size_t num_atoms = molecule_.num();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        const bool present_ok = validate_device_buffers_cluster_particle_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
             #pragma acc host_data use_device(elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
@@ -573,22 +543,7 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_elem_interp_pts = static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
-        std::size_t num_elem_interp_potentials = elem_interp_potential_.size();
-        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
+        const bool present_ok = validate_device_buffers_cluster_cluster_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
             #pragma acc host_data use_device(elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
@@ -722,24 +677,7 @@ void SourceTermCompute::upward_pass()
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_UP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_atoms = molecule_.num();
-        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
-        std::size_t scratch_num = max_mol_particles_per_node_;
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)weights_ptr, mol_weights_.size() * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)exact_idx_x_ptr, scratch_num * sizeof(int));
-        present_ok = present_ok && acc_is_present((void*)exact_idx_y_ptr, scratch_num * sizeof(int));
-        present_ok = present_ok && acc_is_present((void*)exact_idx_z_ptr, scratch_num * sizeof(int));
-        present_ok = present_ok && acc_is_present((void*)denominator_ptr, scratch_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_upward_pass_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
             #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
@@ -940,25 +878,7 @@ void SourceTermCompute::downward_pass()
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_DOWN");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_elements = elements_.num();
-        std::size_t num_elem_interp_pts = static_cast<std::size_t>(num_elem_interp_pts_per_node_) * target_tree_.num_nodes();
-        std::size_t num_elem_interp_potentials = elem_interp_potential_.size();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)elem_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_x_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_y_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_z_ptr, num_elem_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dx_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dy_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)elem_clusters_p_dz_ptr, num_elem_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)weights_ptr, elem_weights_.size() * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)source_term_ptr, source_term_.size() * sizeof(double));
+        const bool present_ok = validate_device_buffers_downward_pass_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
             #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
@@ -1113,7 +1033,79 @@ void SourceTermCompute::downward_pass()
 //    timers_.downward_pass.stop();
 }
 
+#ifdef USE_CUDA_CC
+bool SourceTermCompute::validate_device_buffers_common_() const
+{
+    if (device_state_ != CudaDeviceState::DeviceMapped || !device_buffers_.ready) {
+        return false;
+    }
+    if (!elements_.cuda_device_ready() || !molecule_.cuda_device_ready() ||
+        !elem_interp_pts_.cuda_device_ready() || !mol_interp_pts_.cuda_device_ready()) {
+        return false;
+    }
 
+    const auto& buf = device_buffers_;
+    const std::size_t q_num = mol_interp_charge_.size();
+    const std::size_t p_num = elem_interp_potential_.size();
+    const std::size_t p_dx_num = elem_interp_potential_dx_.size();
+    const std::size_t p_dy_num = elem_interp_potential_dy_.size();
+    const std::size_t p_dz_num = elem_interp_potential_dz_.size();
+    const std::size_t mol_weights_num = mol_weights_.size();
+    const std::size_t elem_weights_num = elem_weights_.size();
+    const std::size_t scratch_num = exact_idx_x_.size();
+
+    if (buf.q_num != q_num || buf.p_num != p_num || buf.p_dx_num != p_dx_num ||
+        buf.p_dy_num != p_dy_num || buf.p_dz_num != p_dz_num ||
+        buf.mol_weights_num != mol_weights_num ||
+        buf.elem_weights_num != elem_weights_num ||
+        buf.scratch_num != scratch_num) {
+        return false;
+    }
+    if ((q_num > 0 && !buf.q_dev) ||
+        (p_num > 0 && !buf.p_dev) ||
+        (p_dx_num > 0 && !buf.p_dx_dev) ||
+        (p_dy_num > 0 && !buf.p_dy_dev) ||
+        (p_dz_num > 0 && !buf.p_dz_dev) ||
+        (mol_weights_num > 0 && !buf.mol_weights_dev) ||
+        (elem_weights_num > 0 && !buf.elem_weights_dev) ||
+        (scratch_num > 0 &&
+         (!buf.exact_idx_x_dev || !buf.exact_idx_y_dev || !buf.exact_idx_z_dev ||
+          !buf.denominator_dev))) {
+        return false;
+    }
+    return true;
+}
+
+bool SourceTermCompute::validate_device_buffers_particle_particle_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SourceTermCompute::validate_device_buffers_particle_cluster_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SourceTermCompute::validate_device_buffers_cluster_particle_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SourceTermCompute::validate_device_buffers_cluster_cluster_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SourceTermCompute::validate_device_buffers_upward_pass_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool SourceTermCompute::validate_device_buffers_downward_pass_() const
+{
+    return validate_device_buffers_common_();
+}
+#endif
 
 void SourceTermCompute::copyin_clusters_to_device() const
 {
@@ -1270,6 +1262,7 @@ void SourceTermCompute::copyin_clusters_to_device() const
 #endif
 
     CUDA_SYNC_AND_CHECK();
+    buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
 
     if (require_all) {

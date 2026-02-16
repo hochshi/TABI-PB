@@ -18,6 +18,8 @@ struct Timers_Elements;
 
 class Elements : public Particles {
 private:
+  friend class BoundaryElement;
+
   const class Molecule &molecule_;
   struct Timers_Elements &timers_;
 
@@ -113,9 +115,11 @@ public:
   void copyin_to_device() const override;
   void delete_from_device() const override;
 
+private:
 #ifdef USE_CUDA_CC
   class DeviceBuffers {
     friend class Elements;
+    friend class BoundaryElement;
   private:
     bool ready = false;
     double* x = nullptr;
@@ -135,35 +139,24 @@ public:
     double* source_q_dy = nullptr;
     double* source_q_dz = nullptr;
     std::size_t num = 0;
-  public:
-    bool getReady() const { return ready; }
-    double* getX() const { return x; }
-    double* getY() const { return y; }
-    double* getZ() const { return z; }
-    double* getNX() const { return nx; }
-    double* getNY() const { return ny; }
-    double* getNZ() const { return nz; }
-    double* getArea() const { return area; }
-    double* getSourceTerm() const { return source_term; }
-    double* getTargetQ() const { return target_q; }
-    double* getTargetQDX() const { return target_q_dx; }
-    double* getTargetQDY() const { return target_q_dy; }
-    double* getTargetQDZ() const { return target_q_dz; }
-    double* getSourceQ() const { return source_q; }
-    double* getSourceQDX() const { return source_q_dx; }
-    double* getSourceQDY() const { return source_q_dy; }
-    double* getSourceQDZ() const { return source_q_dz; }
-    std::size_t getNum() const { return num; }
   };
-
-  const DeviceBuffers& device_buffers() const { return device_buffers_; }
   void reset_device_buffers_() const;
+  bool validate_device_buffers_compute_source_term_() const;
+  bool validate_device_buffers_compute_charges_() const;
 #endif
 
-private:
 #ifdef USE_CUDA_CC
   mutable DeviceBuffers device_buffers_;
   mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+#endif
+
+public:
+#ifdef USE_CUDA_CC
+  bool cuda_device_ready() const {
+    return device_state_ == CudaDeviceState::DeviceMapped && device_buffers_.ready;
+  }
+#else
+  bool cuda_device_ready() const { return false; }
 #endif
 };
 

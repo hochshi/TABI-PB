@@ -124,6 +124,7 @@ void Molecule::copyin_to_device() const {
     CUDA_FREE_AND_NULL(buf.particles_z_dev);
     CUDA_FREE_AND_NULL(buf.charge_dev);
     buf.num_particles = 0;
+    buf.ready = false;
   }
 
   if (buf.num_particles == 0 && num_particles > 0) {
@@ -165,6 +166,7 @@ void Molecule::copyin_to_device() const {
 #endif
 
   CUDA_SYNC_AND_CHECK();
+  buf.ready = true;
   device_state_ = CudaDeviceState::DeviceMapped;
 
   if (require_all && num_particles > 0) {
@@ -215,6 +217,7 @@ void Molecule::delete_from_device() const {
   CUDA_FREE_AND_NULL(buf.particles_z_dev);
   CUDA_FREE_AND_NULL(buf.charge_dev);
   buf.num_particles = 0;
+  buf.ready = false;
   device_state_ = CudaDeviceState::HostOnly;
 #elif defined(OPENACC_ENABLED)
   const double *x_ptr = x_.data();

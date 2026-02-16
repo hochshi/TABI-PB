@@ -32,6 +32,7 @@ private:
     class DeviceBuffers {
         friend class Molecule;
     private:
+        bool ready = false;
         double* particles_x_dev = nullptr;
         double* particles_y_dev = nullptr;
         double* particles_z_dev = nullptr;
@@ -55,6 +56,15 @@ public:
     
     const double* charge_ptr() const { return charge_.data(); };
     const double* radius_ptr() const { return radius_.data(); };
+
+#ifdef USE_CUDA_CC
+    bool cuda_device_ready() const {
+        return device_state_ == CudaDeviceState::DeviceMapped &&
+               device_buffers_.ready;
+    }
+#else
+    bool cuda_device_ready() const { return false; }
+#endif
     
     void reorder() override;
     void unorder() override;

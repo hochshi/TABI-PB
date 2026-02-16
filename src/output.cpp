@@ -42,6 +42,22 @@ Output::Output(class Molecule& mol, class Elements& elem, const struct Params& p
     timers_.ctor.stop();
 }
 
+#ifdef USE_CUDA_CC
+bool Output::validate_device_buffers_compute_coulombic_energy_() const {
+    return molecule_.cuda_device_ready();
+}
+
+bool Output::validate_device_buffers_compute_solvation_energy_() const {
+    const auto& buf = device_buffers_;
+    return elements_.cuda_device_ready() &&
+           molecule_.cuda_device_ready() &&
+           device_state_ == CudaDeviceState::DeviceMapped &&
+           buf.ready &&
+           buf.potential_dev &&
+           buf.potential_num == potential_.size();
+}
+#endif
+
 
 
 
@@ -62,11 +78,7 @@ void Output::compute_coulombic_energy()
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const bool present_ok =
-            acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        const bool present_ok = validate_device_buffers_compute_coulombic_energy_();
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -179,6 +191,7 @@ void Output::compute_solvation_energy()
     if (buf.potential_num != 0 && buf.potential_num != potential_num) {
         CUDA_FREE_AND_NULL(buf.potential_dev);
         buf.potential_num = 0;
+        buf.ready = false;
     }
     if (buf.potential_num == 0 && potential_num > 0) {
         CUDA_MALLOC_OR_DIE(&buf.potential_dev, potential_num * sizeof(double));
@@ -198,6 +211,7 @@ void Output::compute_solvation_energy()
                        potential_num * sizeof(double));
 #endif
     CUDA_SYNC_AND_CHECK();
+    buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
 #endif
 #ifdef USE_CUDA_CC
@@ -205,7 +219,7 @@ void Output::compute_solvation_energy()
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
         if (require_all && potential_num > 0) {
-            if (!buf.potential_dev || buf.potential_num != potential_num) {
+            if (!buf.potential_dev || !buf.ready || buf.potential_num != potential_num) {
                 std::cerr << "[CUDA_OUTPUT] require_all set but potential buffer not ready. "
                           << "Aborting to avoid OpenACC fallback.\n";
                 std::exit(1);
@@ -217,19 +231,7 @@ void Output::compute_solvation_energy()
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-        const bool present_ok =
-            acc_is_present((void*)elem_x_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_y_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_z_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_nx_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_ny_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_nz_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)elem_area_ptr, num_elems * sizeof(double)) &&
-            acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double)) &&
-            acc_is_present((void*)potential_ptr, potential_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_compute_solvation_energy_();
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -276,6 +278,7 @@ void Output::compute_solvation_energy()
 #endif
             CUDA_FREE_AND_NULL(buf.potential_dev);
             buf.potential_num = 0;
+            buf.ready = false;
             device_state_ = CudaDeviceState::HostOnly;
 #endif
             return;
@@ -346,6 +349,7 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     if (buf.potential_num != 0 && buf.potential_num != potential_num) {
         CUDA_FREE_AND_NULL(buf.potential_dev);
         buf.potential_num = 0;
+        buf.ready = false;
     }
     if (buf.potential_num == 0 && potential_num > 0) {
         CUDA_MALLOC_OR_DIE(&buf.potential_dev, potential_num * sizeof(double));
@@ -365,6 +369,7 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
                        potential_num * sizeof(double));
 #endif
     CUDA_SYNC_AND_CHECK();
+    buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
 #endif
 #ifdef USE_CUDA_CC
@@ -372,7 +377,7 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
         if (require_all && potential_num > 0) {
-            if (!buf.potential_dev || buf.potential_num != potential_num) {
+            if (!buf.potential_dev || !buf.ready || buf.potential_num != potential_num) {
                 std::cerr << "[CUDA_OUTPUT] require_all set but potential buffer not ready. "
                           << "Aborting to avoid OpenACC fallback.\n";
                 std::exit(1);
@@ -396,6 +401,7 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
 #endif
     CUDA_FREE_AND_NULL(buf.potential_dev);
     buf.potential_num = 0;
+    buf.ready = false;
     device_state_ = CudaDeviceState::HostOnly;
 #elif defined(OPENACC_ENABLED)
     #pragma acc exit data delete(potential_ptr[0:potential_num])

@@ -431,18 +431,7 @@ void Elements::compute_source_term() {
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all =
         (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    const bool present_ok =
-        acc_is_present((void*)elements_x_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)elements_y_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)elements_z_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)elements_nx_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)elements_ny_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)elements_nz_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)elements_source_term_ptr, (2 * num) * sizeof(double)) &&
-        acc_is_present((void*)molecule_x_ptr, num_atoms * sizeof(double)) &&
-        acc_is_present((void*)molecule_y_ptr, num_atoms * sizeof(double)) &&
-        acc_is_present((void*)molecule_z_ptr, num_atoms * sizeof(double)) &&
-        acc_is_present((void*)molecule_charge_ptr, num_atoms * sizeof(double));
+    const bool present_ok = validate_device_buffers_compute_source_term_();
     if (present_ok) {
       acc_wait(acc_async_sync);
       void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -597,20 +586,7 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
   {
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    const bool present_ok =
-        acc_is_present((void*)nx_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)ny_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)nz_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)area_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)potential_ptr, (2 * num) * sizeof(double)) &&
-        acc_is_present((void*)target_q_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)target_q_dx_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)target_q_dy_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)target_q_dz_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)source_q_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)source_q_dx_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)source_q_dy_ptr, num * sizeof(double)) &&
-        acc_is_present((void*)source_q_dz_ptr, num * sizeof(double));
+    const bool present_ok = validate_device_buffers_compute_charges_();
     if (present_ok) {
       acc_wait(acc_async_sync);
       void* stream = acc_get_cuda_stream(acc_async_sync);
@@ -656,6 +632,30 @@ Timer& Elements::compute_charges_timer() {
 }
 
 #ifdef USE_CUDA_CC
+bool Elements::validate_device_buffers_compute_source_term_() const {
+  if (!cuda_device_ready() || !molecule_.cuda_device_ready()) {
+    return false;
+  }
+  const auto& buf = device_buffers_;
+  return buf.x && buf.y && buf.z &&
+         buf.nx && buf.ny && buf.nz &&
+         buf.source_term &&
+         buf.num == num_;
+}
+
+bool Elements::validate_device_buffers_compute_charges_() const {
+  if (!cuda_device_ready()) {
+    return false;
+  }
+  const auto& buf = device_buffers_;
+  return buf.nx && buf.ny && buf.nz &&
+         buf.area && buf.target_q &&
+         buf.target_q_dx && buf.target_q_dy && buf.target_q_dz &&
+         buf.source_q && buf.source_q_dx &&
+         buf.source_q_dy && buf.source_q_dz &&
+         buf.num == num_;
+}
+
 void Elements::reset_device_buffers_() const {
   device_buffers_ = DeviceBuffers{};
   device_state_ = CudaDeviceState::HostOnly;

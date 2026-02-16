@@ -63,6 +63,12 @@ private:
 
     mutable DeviceBuffers device_buffers_;
     mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+    bool validate_device_buffers_common_() const;
+    bool validate_device_buffers_particle_particle_() const;
+    bool validate_device_buffers_particle_cluster_() const;
+    bool validate_device_buffers_cluster_particle_() const;
+    bool validate_device_buffers_cluster_cluster_() const;
+    bool validate_device_buffers_upward_pass_() const;
 #endif
     
     

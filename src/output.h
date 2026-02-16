@@ -47,12 +47,15 @@ private:
     class DeviceBuffers {
         friend class Output;
     private:
+        bool ready = false;
         double* potential_dev = nullptr;
         std::size_t potential_num = 0;
     };
 
     mutable DeviceBuffers device_buffers_;
     mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+    bool validate_device_buffers_compute_coulombic_energy_() const;
+    bool validate_device_buffers_compute_solvation_energy_() const;
 #endif
 
 public:
@@ -65,6 +68,15 @@ public:
     
     void set_num_iter(long int num_iter) { num_iter_ = num_iter; }
     void set_residual(double residual) { residual_ = residual; }
+
+#ifdef USE_CUDA_CC
+    bool cuda_device_ready() const {
+        return device_state_ == CudaDeviceState::DeviceMapped &&
+               device_buffers_.ready;
+    }
+#else
+    bool cuda_device_ready() const { return false; }
+#endif
     
     void compute_solvation_energy();
     void compute_solvation_energy(const class InterpolationPoints& elem_interp_pts, const class Tree& elem_tree,

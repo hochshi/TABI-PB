@@ -122,13 +122,7 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_atoms = molecule_.num();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)coul_eng_ptr, coul_eng_vec_.size() * sizeof(double));
+        const bool present_ok = validate_device_buffers_particle_particle_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
             #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, coul_eng_ptr)
@@ -226,19 +220,7 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
-        std::size_t num_atoms = molecule_.num();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)coul_eng_ptr, coul_eng_vec_.size() * sizeof(double));
+        const bool present_ok = validate_device_buffers_particle_cluster_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
             #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
@@ -347,18 +329,7 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * target_tree_.num_nodes();
-        std::size_t num_mol_interp_potentials = mol_interp_potential_.size();
-        std::size_t num_atoms = molecule_.num();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_p_ptr, num_mol_interp_potentials * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
+        const bool present_ok = validate_device_buffers_cluster_particle_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
             #pragma acc host_data use_device(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
@@ -461,15 +432,7 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
-        std::size_t num_mol_interp_potentials = mol_interp_potential_.size();
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_p_ptr, num_mol_interp_potentials * sizeof(double));
+        const bool present_ok = validate_device_buffers_cluster_cluster_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
             #pragma acc host_data use_device(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
@@ -576,24 +539,7 @@ void CoulombicEnergyCompute::upward_pass()
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_UP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        std::size_t num_atoms = molecule_.num();
-        std::size_t num_mol_interp_pts = static_cast<std::size_t>(num_mol_interp_pts_per_node_) * source_tree_.num_nodes();
-        std::size_t num_mol_interp_charges = mol_interp_charge_.size();
-        std::size_t scratch_num = max_mol_particles_per_node_;
-        bool present_ok = true;
-        present_ok = present_ok && acc_is_present((void*)mol_x_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_y_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_z_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_q_ptr, num_atoms * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_x_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_y_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_z_ptr, num_mol_interp_pts * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)mol_clusters_q_ptr, num_mol_interp_charges * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)weights_ptr, mol_weights_.size() * sizeof(double));
-        present_ok = present_ok && acc_is_present((void*)exact_idx_x_ptr, scratch_num * sizeof(int));
-        present_ok = present_ok && acc_is_present((void*)exact_idx_y_ptr, scratch_num * sizeof(int));
-        present_ok = present_ok && acc_is_present((void*)exact_idx_z_ptr, scratch_num * sizeof(int));
-        present_ok = present_ok && acc_is_present((void*)denominator_ptr, scratch_num * sizeof(double));
+        const bool present_ok = validate_device_buffers_upward_pass_();
         if (present_ok) {
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
             #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
@@ -765,6 +711,65 @@ void CoulombicEnergyCompute::downward_pass()
 {
 }
 
+#ifdef USE_CUDA_CC
+bool CoulombicEnergyCompute::validate_device_buffers_common_() const
+{
+    if (device_state_ != CudaDeviceState::DeviceMapped || !device_buffers_.ready) {
+        return false;
+    }
+    if (!molecule_.cuda_device_ready() || !mol_interp_pts_.cuda_device_ready()) {
+        return false;
+    }
+
+    const auto& buf = device_buffers_;
+    const std::size_t q_num = mol_interp_charge_.size();
+    const std::size_t p_num = mol_interp_potential_.size();
+    const std::size_t coul_eng_num = coul_eng_vec_.size();
+    const std::size_t weights_num = mol_weights_.size();
+    const std::size_t scratch_num = exact_idx_x_.size();
+
+    if (buf.q_num != q_num || buf.p_num != p_num ||
+        buf.coul_eng_num != coul_eng_num || buf.weights_num != weights_num ||
+        buf.scratch_num != scratch_num) {
+        return false;
+    }
+    if ((q_num > 0 && !buf.q_dev) ||
+        (p_num > 0 && !buf.p_dev) ||
+        (coul_eng_num > 0 && !buf.coul_eng_dev) ||
+        (weights_num > 0 && !buf.weights_dev) ||
+        (scratch_num > 0 &&
+         (!buf.exact_idx_x_dev || !buf.exact_idx_y_dev || !buf.exact_idx_z_dev ||
+          !buf.denominator_dev))) {
+        return false;
+    }
+    return true;
+}
+
+bool CoulombicEnergyCompute::validate_device_buffers_particle_particle_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool CoulombicEnergyCompute::validate_device_buffers_particle_cluster_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool CoulombicEnergyCompute::validate_device_buffers_cluster_particle_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool CoulombicEnergyCompute::validate_device_buffers_cluster_cluster_() const
+{
+    return validate_device_buffers_common_();
+}
+
+bool CoulombicEnergyCompute::validate_device_buffers_upward_pass_() const
+{
+    return validate_device_buffers_common_();
+}
+#endif
 
 
 void CoulombicEnergyCompute::copyin_clusters_to_device() const

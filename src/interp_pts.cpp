@@ -131,6 +131,7 @@ void InterpolationPoints::copyin_to_device() const
         CUDA_FREE_AND_NULL(buf.interp_y_dev);
         CUDA_FREE_AND_NULL(buf.interp_z_dev);
         buf.num_interp_pts = 0;
+        buf.ready = false;
     }
 
     if (buf.num_interp_pts == 0 && num_interp_pts > 0) {
@@ -159,6 +160,7 @@ void InterpolationPoints::copyin_to_device() const
 #endif
 
     CUDA_SYNC_AND_CHECK();
+    buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
 
     if (require_all && num_interp_pts > 0) {
