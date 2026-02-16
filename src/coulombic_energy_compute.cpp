@@ -18,11 +18,6 @@
 #include "cuda_helpers.h"
 #endif
 
-namespace {
-constexpr int kCoulombicAsync = 9;
-}
-
-
 CoulombicEnergyCompute::CoulombicEnergyCompute(const class Molecule& molecule,
                       const class InterpolationPoints& mol_interp_pts, const class Tree& mol_tree,
                       const class InteractionList& interaction_list, double phys_eps_solute)
@@ -118,11 +113,11 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
-        const bool present_ok = validate_device_buffers_particle_particle_();
+            const bool present_ok = validate_device_buffers_particle_particle_();
         if (present_ok) {
             const auto mol_dev = molecule_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            void* stream = nullptr;
             coulombic_pp_cuda(
                 mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
                 target_node_begin,
@@ -211,7 +206,7 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
             const auto mol_dev = molecule_.device_view();
             const auto mol_interp_dev = mol_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            void* stream = nullptr;
             coulombic_pc_cuda(
                 mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
                 mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
@@ -309,7 +304,7 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
             const auto mol_dev = molecule_.device_view();
             const auto mol_interp_dev = mol_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            void* stream = nullptr;
             coulombic_cp_cuda(
                 mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
                 self_dev.p,
@@ -401,7 +396,7 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
         if (present_ok) {
             const auto mol_interp_dev = mol_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            void* stream = nullptr;
             coulombic_cc_cuda(
                 mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
                 self_dev.q, self_dev.p,
@@ -498,7 +493,7 @@ void CoulombicEnergyCompute::upward_pass()
             const auto mol_dev = molecule_.device_view();
             const auto mol_interp_dev = mol_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kCoulombicAsync);
+            void* stream = nullptr;
             for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
                 auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
                 std::size_t particle_start = particle_idxs[0];
@@ -521,7 +516,7 @@ void CoulombicEnergyCompute::upward_pass()
                     stream);
                 CUDA_CHECK_LAST_KERNEL();
             }
-            #pragma acc wait(kCoulombicAsync)
+            CUDA_SYNC_AND_CHECK();
             return;
         }
     }
@@ -780,9 +775,6 @@ void CoulombicEnergyCompute::copyin_clusters_to_device() const
     }
 
     cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(kCoulombicAsync));
-#endif
 
     if (q_num > 0) {
         CUDA_MEMCPY_ASYNC(buf.q_dev, q_ptr, q_num * sizeof(double),
@@ -867,9 +859,6 @@ void CoulombicEnergyCompute::delete_clusters_from_device() const
     // Pull the scalar/vector result back before releasing device ownership.
     if (buf.coul_eng_dev && coul_eng_num > 0) {
         cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-        stream = static_cast<cudaStream_t>(acc_get_cuda_stream(kCoulombicAsync));
-#endif
         CUDA_MEMCPY_ASYNC(coul_eng_ptr, buf.coul_eng_dev, coul_eng_num * sizeof(double),
                           cudaMemcpyDeviceToHost, stream);
         CUDA_SYNC_AND_CHECK();

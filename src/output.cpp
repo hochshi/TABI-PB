@@ -79,10 +79,6 @@ void Output::compute_coulombic_energy()
         if (present_ok) {
             const auto mol_dev = molecule_.device_view();
             cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-            acc_wait(acc_async_sync);
-            stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
             double* energy_dev = nullptr;
             auto check = [](cudaError_t err, const char* what) {
                 if (err != cudaSuccess) {
@@ -197,9 +193,6 @@ void Output::compute_solvation_energy()
     }
 
     cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
     CUDA_MEMCPY_ASYNC(buf.potential_dev, potential_ptr,
                       potential_num * sizeof(double),
                       cudaMemcpyHostToDevice, stream);
@@ -229,8 +222,7 @@ void Output::compute_solvation_energy()
             const auto elem_dev = elements_.device_view();
             const auto mol_dev = molecule_.device_view();
             const auto out_dev = device_view();
-            acc_wait(acc_async_sync);
-            cudaStream_t stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+            cudaStream_t stream = nullptr;
             double* energy_dev = nullptr;
             auto check = [](cudaError_t err, const char* what) {
                 if (err != cudaSuccess) {
@@ -352,9 +344,6 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     }
 
     cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
     CUDA_MEMCPY_ASYNC(buf.potential_dev, potential_ptr,
                       potential_num * sizeof(double),
                       cudaMemcpyHostToDevice, stream);
