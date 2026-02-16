@@ -10,7 +10,6 @@
 #include "boundary_element.h"
 #ifdef USE_CUDA_CC
 #include <openacc.h>
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include "cuda_helpers.h"
 #include "cc_cuda.h"
@@ -21,10 +20,6 @@
 #include "pc_cuda.h"
 #include "pp_cuda.h"
 #include "pppc_cuda.h"
-
-extern "C" {
-    CUcontext acc_get_cuda_context(void) __attribute__((weak));
-}
 #endif
 
 
@@ -263,10 +258,8 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            #pragma acc host_data use_device(potential_new, potential_temp)
-            {
-                be_potential_copy_zero_cuda(potential_new, potential_temp, potential_new, potential_num, stream);
-            }
+            be_potential_copy_zero_cuda(potential_new, device_buffers_.potential_temp,
+                                        potential_new, potential_num, stream);
         } else if (require_all) {
             std::cerr << "[CUDA_BE] require_all set but potential buffers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
@@ -351,13 +344,10 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
         if (present_ok) {
             acc_wait(acc_async_sync);
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            #pragma acc host_data use_device(potential_old, potential_temp, potential_new)
-            {
-                be_potential_combine_cuda(potential_old, potential_temp, potential_new,
-                                          potential_num, alpha, beta,
-                                          potential_coeff_1, potential_coeff_2,
-                                          stream);
-            }
+            be_potential_combine_cuda(potential_old, device_buffers_.potential_temp, potential_new,
+                                      potential_num, alpha, beta,
+                                      potential_coeff_1, potential_coeff_2,
+                                      stream);
         } else if (require_all) {
             std::cerr << "[CUDA_BE] require_all set but potential buffers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
@@ -1112,8 +1102,8 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 
         const bool present_ok =
             validate_device_buffers_particle_particle_() &&
-            cuda_pointer_mapped(potential, (num_elements * 2) * sizeof(double)) &&
-            cuda_pointer_mapped(potential_old, (num_elements * 2) * sizeof(double));
+            cuda_pointer_is_device_accessible(potential) &&
+            cuda_pointer_is_device_accessible(potential_old);
 
         if (require_cuda_pp && !present_ok) {
             std::cerr << "[CUDA_PP] require set but device pointers not present. "
@@ -1123,52 +1113,29 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 
         if (present_ok) {
             acc_wait(acc_async_sync);
-            static bool cu_inited = false;
-            if (!cu_inited) {
-                cuInit(0);
-                cu_inited = true;
-            }
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            const std::uint32_t* __restrict element_node_idx_ptr = element_node_idx_u32_.data();
-            #pragma acc host_data use_device(elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                             elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, \
-                                             elements_area_ptr, potential, potential_old, \
-                                             node_begin_ptr, node_end_ptr, offsets_ptr, sources_ptr, \
-                                             element_node_idx_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                pp_interact_cuda(eps,
-                                 kappa,
-                                 kappa2,
-                                 elements_x_ptr,
-                                 elements_y_ptr,
-                                 elements_z_ptr,
-                                 elements_nx_ptr,
-                                 elements_ny_ptr,
-                                 elements_nz_ptr,
-                                 elements_area_ptr,
-                                 potential_old,
-                                 potential,
-                                 num_elements,
-                                 element_node_idx_ptr,
-                                 num_nodes,
-                                 node_begin_ptr,
-                                 node_end_ptr,
-                                 offsets_ptr,
-                                 sources_ptr,
-                                 offsets_num,
-                                 sources_num,
-                                 stream);
-            }
+            pp_interact_cuda(eps,
+                             kappa,
+                             kappa2,
+                             device_buffers_.elements_x,
+                             device_buffers_.elements_y,
+                             device_buffers_.elements_z,
+                             device_buffers_.elements_nx,
+                             device_buffers_.elements_ny,
+                             device_buffers_.elements_nz,
+                             device_buffers_.elements_area,
+                             potential_old,
+                             potential,
+                             num_elements,
+                             device_buffers_.element_node_idx,
+                             num_nodes,
+                             device_buffers_.node_begin,
+                             device_buffers_.node_end,
+                             device_buffers_.pp_offsets,
+                             device_buffers_.pp_sources,
+                             offsets_num,
+                             sources_num,
+                             stream);
             timers_.particle_particle_interact.stop();
             return;
         } else if (require_cuda_pp) {
@@ -1360,8 +1327,8 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
     if (include_pp && use_fused) {
         const bool present_ok =
             validate_device_buffers_particle_cluster_(true) &&
-            cuda_pointer_mapped(potential, (num_elements * 2) * sizeof(double)) &&
-            cuda_pointer_mapped(potential_old, (num_elements * 2) * sizeof(double));
+            cuda_pointer_is_device_accessible(potential) &&
+            cuda_pointer_is_device_accessible(potential_old);
 
         if (require_fused && !present_ok) {
             std::cerr << "[CUDA_PPPC] require set but device pointers not present. "
@@ -1371,78 +1338,53 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
 
         if (present_ok) {
             acc_wait(acc_async_sync);
-            static bool cu_inited = false;
-            if (!cu_inited) {
-                cuInit(0);
-                cu_inited = true;
-            }
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                             elements_nx_ptr, elements_ny_ptr, elements_nz_ptr, elements_area_ptr, \
-                                             targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
-                                             potential, potential_old, element_node_idx_ptr, \
-                                             pp_offsets_ptr, pp_sources_ptr, pc_offsets_ptr, pc_sources_ptr, \
-                                             node_begin_ptr, node_end_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                pppc_interact_cuda(num_interp_pts_per_node,
-                                   num_charges_per_node,
-                                   eps,
-                                   kappa,
-                                   kappa2,
-                                   clusters_x_ptr,
-                                   clusters_y_ptr,
-                                   clusters_z_ptr,
-                                   clusters_q_ptr,
-                                   clusters_q_dx_ptr,
-                                   clusters_q_dy_ptr,
-                                   clusters_q_dz_ptr,
-                                   elements_x_ptr,
-                                   elements_y_ptr,
-                                   elements_z_ptr,
-                                   elements_nx_ptr,
-                                   elements_ny_ptr,
-                                   elements_nz_ptr,
-                                   elements_area_ptr,
-                                   targets_q_ptr,
-                                   targets_q_dx_ptr,
-                                   targets_q_dy_ptr,
-                                   targets_q_dz_ptr,
-                                   potential_old,
-                                   potential,
-                                   num_elements,
-                                   element_node_idx_ptr,
-                                   num_nodes,
-                                   node_begin_ptr,
-                                   node_end_ptr,
-                                   pp_offsets_ptr,
-                                   pp_sources_ptr,
-                                   pp_offsets_num,
-                                   pp_sources_num,
-                                   pc_offsets_ptr,
-                                   pc_sources_ptr,
-                                   pc_offsets_num,
-                                   pc_sources_num,
-                                   stream);
-            }
+            pppc_interact_cuda(num_interp_pts_per_node,
+                               num_charges_per_node,
+                               eps,
+                               kappa,
+                               kappa2,
+                               device_buffers_.clusters_x,
+                               device_buffers_.clusters_y,
+                               device_buffers_.clusters_z,
+                               device_buffers_.clusters_q,
+                               device_buffers_.clusters_q_dx,
+                               device_buffers_.clusters_q_dy,
+                               device_buffers_.clusters_q_dz,
+                               device_buffers_.elements_x,
+                               device_buffers_.elements_y,
+                               device_buffers_.elements_z,
+                               device_buffers_.elements_nx,
+                               device_buffers_.elements_ny,
+                               device_buffers_.elements_nz,
+                               device_buffers_.elements_area,
+                               device_buffers_.targets_q,
+                               device_buffers_.targets_q_dx,
+                               device_buffers_.targets_q_dy,
+                               device_buffers_.targets_q_dz,
+                               potential_old,
+                               potential,
+                               num_elements,
+                               device_buffers_.element_node_idx,
+                               num_nodes,
+                               device_buffers_.node_begin,
+                               device_buffers_.node_end,
+                               device_buffers_.pp_offsets,
+                               device_buffers_.pp_sources,
+                               pp_offsets_num,
+                               pp_sources_num,
+                               device_buffers_.pc_offsets,
+                               device_buffers_.pc_sources,
+                               pc_offsets_num,
+                               pc_sources_num,
+                               stream);
             timers_.particle_cluster_interact.stop();
             return;
         }
     } else if (!include_pp) {
         const bool present_ok =
             validate_device_buffers_particle_cluster_(false) &&
-            cuda_pointer_mapped(potential, (num_elements * 2) * sizeof(double));
+            cuda_pointer_is_device_accessible(potential);
 
         if (require_cuda_pc && !present_ok) {
             std::cerr << "[CUDA_PC] require set but device pointers not present. "
@@ -1452,57 +1394,35 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
 
         if (present_ok) {
             acc_wait(acc_async_sync);
-            static bool cu_inited = false;
-            if (!cu_inited) {
-                cuInit(0);
-                cu_inited = true;
-            }
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                             targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
-                                             potential, element_node_idx_ptr, pc_offsets_ptr, pc_sources_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                pc_interact_cuda(num_interp_pts_per_node,
-                                 num_charges_per_node,
-                                 eps,
-                                 kappa,
-                                 kappa2,
-                                 clusters_x_ptr,
-                                 clusters_y_ptr,
-                                 clusters_z_ptr,
-                                 clusters_q_ptr,
-                                 clusters_q_dx_ptr,
-                                 clusters_q_dy_ptr,
-                                 clusters_q_dz_ptr,
-                                 elements_x_ptr,
-                                 elements_y_ptr,
-                                 elements_z_ptr,
-                                 targets_q_ptr,
-                                 targets_q_dx_ptr,
-                                 targets_q_dy_ptr,
-                                 targets_q_dz_ptr,
-                                 potential,
-                                 num_elements,
-                                 element_node_idx_ptr,
-                                 num_nodes,
-                                 pc_offsets_ptr,
-                                 pc_sources_ptr,
-                                 pc_offsets_num,
-                                 pc_sources_num,
-                                 stream);
-            }
+            pc_interact_cuda(num_interp_pts_per_node,
+                             num_charges_per_node,
+                             eps,
+                             kappa,
+                             kappa2,
+                             device_buffers_.clusters_x,
+                             device_buffers_.clusters_y,
+                             device_buffers_.clusters_z,
+                             device_buffers_.clusters_q,
+                             device_buffers_.clusters_q_dx,
+                             device_buffers_.clusters_q_dy,
+                             device_buffers_.clusters_q_dz,
+                             device_buffers_.elements_x,
+                             device_buffers_.elements_y,
+                             device_buffers_.elements_z,
+                             device_buffers_.targets_q,
+                             device_buffers_.targets_q_dx,
+                             device_buffers_.targets_q_dy,
+                             device_buffers_.targets_q_dz,
+                             potential,
+                             num_elements,
+                             device_buffers_.element_node_idx,
+                             num_nodes,
+                             device_buffers_.pc_offsets,
+                             device_buffers_.pc_sources,
+                             pc_offsets_num,
+                             pc_sources_num,
+                             stream);
             timers_.particle_cluster_interact.stop();
             return;
         }
@@ -2153,7 +2073,11 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
     const std::size_t* __restrict cc_sources_ptr = cc_sources.data();
     std::size_t num_nodes = node_particles_begin_.size();
 #endif
+    const int n  = num_interp_pts_per_node;
+    const int n2 = n * n;
+    const int n3 = n2 * n;
 
+    if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
 #ifdef OPENACC_ENABLED
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -2171,11 +2095,6 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
     std::size_t cp_sources_num = cp_sources_u32_.size();
     std::size_t cc_offsets_num = cc_offsets_u32_.size();
     std::size_t cc_sources_num = cc_sources_u32_.size();
-    if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
-        int n  = num_interp_pts_per_node;
-        int n2 = n * n;
-        int n3 = n2 * n;
-
 #ifdef USE_CUDA_CC
         const bool present_ok = validate_device_buffers_cluster_mixed_();
 
@@ -2186,69 +2105,43 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         }
 
         if (present_ok) {
-            int acc_dev = acc_get_device_num(acc_device_nvidia);
-            (void)acc_dev;
             acc_wait(acc_async_sync);
-            static bool cu_inited = false;
-            if (!cu_inited) {
-                cuInit(0);
-                cu_inited = true;
-            }
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                             clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
-                                             node_begin_ptr, node_end_ptr, \
-                                             cp_offsets_ptr, cp_sources_ptr, cc_offsets_ptr, cc_sources_ptr, \
-                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                             sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                timers_.cluster_cluster_interact.stop();
-                timers_.cluster_particle_interact.start();
-                cp_interact_cuda(n, n2, n3, num_interp_pts_per_node, num_charges_per_node,
-                                 eps, kappa, kappa2,
-                                 clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
-                                 clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
-                                 node_begin_ptr, node_end_ptr,
-                                 cp_offsets_ptr, cp_sources_ptr,
-                                 elements_x_ptr, elements_y_ptr, elements_z_ptr,
-                                 sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr,
-                                 num_elements,
-                                 num_nodes,
-                                 cp_offsets_num,
-                                 cp_sources_num,
-                                 stream);
-                timers_.cluster_particle_interact.stop();
-                timers_.cluster_cluster_interact.start();
-                cc_interact_cuda(n, n2, n3, num_interp_pts_per_node, num_charges_per_node,
-                                 eps, kappa, kappa2,
-                                 clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
-                                 clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr,
-                                 clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
-                                 node_begin_ptr, node_end_ptr,
-                                 cp_offsets_ptr, cp_sources_ptr,
-                                 cc_offsets_ptr, cc_sources_ptr,
-                                 elements_x_ptr, elements_y_ptr, elements_z_ptr,
-                                 sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr,
-                                 num_elements,
-                                 num_nodes,
-                                 cp_offsets_num,
-                                 cp_sources_num,
-                                 cc_offsets_num,
-                                 cc_sources_num,
-                                 0,
-                                 stream);
-            }
+            timers_.cluster_cluster_interact.stop();
+            timers_.cluster_particle_interact.start();
+            cp_interact_cuda(n, n2, n3, num_interp_pts_per_node, num_charges_per_node,
+                             eps, kappa, kappa2,
+                             device_buffers_.clusters_x, device_buffers_.clusters_y, device_buffers_.clusters_z,
+                             device_buffers_.clusters_p, device_buffers_.clusters_p_dx, device_buffers_.clusters_p_dy, device_buffers_.clusters_p_dz,
+                             device_buffers_.node_begin, device_buffers_.node_end,
+                             device_buffers_.cp_offsets, device_buffers_.cp_sources,
+                             device_buffers_.elements_x, device_buffers_.elements_y, device_buffers_.elements_z,
+                             device_buffers_.sources_q, device_buffers_.sources_q_dx, device_buffers_.sources_q_dy, device_buffers_.sources_q_dz,
+                             num_elements,
+                             num_nodes,
+                             cp_offsets_num,
+                             cp_sources_num,
+                             stream);
+            timers_.cluster_particle_interact.stop();
+            timers_.cluster_cluster_interact.start();
+            cc_interact_cuda(n, n2, n3, num_interp_pts_per_node, num_charges_per_node,
+                             eps, kappa, kappa2,
+                             device_buffers_.clusters_x, device_buffers_.clusters_y, device_buffers_.clusters_z,
+                             device_buffers_.clusters_q, device_buffers_.clusters_q_dx, device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
+                             device_buffers_.clusters_p, device_buffers_.clusters_p_dx, device_buffers_.clusters_p_dy, device_buffers_.clusters_p_dz,
+                             device_buffers_.node_begin, device_buffers_.node_end,
+                             device_buffers_.cp_offsets, device_buffers_.cp_sources,
+                             device_buffers_.cc_offsets, device_buffers_.cc_sources,
+                             device_buffers_.elements_x, device_buffers_.elements_y, device_buffers_.elements_z,
+                             device_buffers_.sources_q, device_buffers_.sources_q_dx, device_buffers_.sources_q_dy, device_buffers_.sources_q_dz,
+                             num_elements,
+                             num_nodes,
+                             cp_offsets_num,
+                             cp_sources_num,
+                             cc_offsets_num,
+                             cc_sources_num,
+                             0,
+                             stream);
             timers_.cluster_cluster_interact.stop();
             return;
         }
@@ -2927,78 +2820,52 @@ void BoundaryElement::upward_pass()
         }
 
         if (present_ok) {
-            int acc_dev = acc_get_device_num(acc_device_nvidia);
-            (void)acc_dev;
             acc_wait(acc_async_sync);
-            static bool cu_inited = false;
-            if (!cu_inited) {
-                cuInit(0);
-                cu_inited = true;
-            }
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                             clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr, \
-                                             weights_ptr, elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                             sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr, \
-                                             node_begin_ptr, node_end_ptr, level_nodes_ptr, \
-                                             exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr, denominator_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
+            if (use_split) {
+                for (std::size_t level = 0; level < level_count; ++level) {
+                    std::size_t level_begin = level_offsets_ptr[level];
+                    std::size_t level_end = level_offsets_ptr[level + 1];
+                    std::size_t num_level_nodes = level_end - level_begin;
+                    if (num_level_nodes == 0) continue;
 
-                if (use_split) {
-                    for (std::size_t level = 0; level < level_count; ++level) {
-                        std::size_t level_begin = level_offsets_ptr[level];
-                        std::size_t level_end = level_offsets_ptr[level + 1];
-                        std::size_t num_level_nodes = level_end - level_begin;
-                        if (num_level_nodes == 0) continue;
-
-                        const std::size_t* level_nodes_dev = level_nodes_ptr + level_begin;
-                        upward_denom_cuda(num_interp_pts_per_node,
-                                          clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
-                                          weights_ptr,
-                                          elements_x_ptr, elements_y_ptr, elements_z_ptr,
-                                          num_elements,
-                                          node_begin_ptr, node_end_ptr,
-                                          level_nodes_dev,
-                                          num_level_nodes,
-                                          exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr,
-                                          denominator_ptr,
-                                          stream);
-
-                        upward_charge_cuda(num_interp_pts_per_node, num_charges_per_node_,
-                                           clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
-                                           weights_ptr,
-                                           elements_x_ptr, elements_y_ptr, elements_z_ptr,
-                                           sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr,
-                                           node_begin_ptr, node_end_ptr,
-                                           level_nodes_dev,
-                                           num_level_nodes,
-                                           exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr,
-                                           denominator_ptr,
-                                           clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr,
-                                           stream);
-                    }
-                } else if (level_nodes_num > 0) {
-                    upward_fused_cuda(num_interp_pts_per_node, num_charges_per_node_,
-                                      clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
-                                      weights_ptr,
-                                      elements_x_ptr, elements_y_ptr, elements_z_ptr,
-                                      sources_q_ptr, sources_q_dx_ptr, sources_q_dy_ptr, sources_q_dz_ptr,
-                                      node_begin_ptr, node_end_ptr,
-                                      level_nodes_ptr,
-                                      level_nodes_num,
-                                      clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr,
+                    const std::size_t* level_nodes_dev = device_buffers_.level_nodes + level_begin;
+                    upward_denom_cuda(num_interp_pts_per_node,
+                                      device_buffers_.clusters_x, device_buffers_.clusters_y, device_buffers_.clusters_z,
+                                      device_buffers_.weights,
+                                      device_buffers_.elements_x, device_buffers_.elements_y, device_buffers_.elements_z,
+                                      num_elements,
+                                      device_buffers_.node_begin, device_buffers_.node_end,
+                                      level_nodes_dev,
+                                      num_level_nodes,
+                                      device_buffers_.exact_idx_x, device_buffers_.exact_idx_y, device_buffers_.exact_idx_z,
+                                      device_buffers_.denominator,
                                       stream);
+
+                    upward_charge_cuda(num_interp_pts_per_node, num_charges_per_node_,
+                                       device_buffers_.clusters_x, device_buffers_.clusters_y, device_buffers_.clusters_z,
+                                       device_buffers_.weights,
+                                       device_buffers_.elements_x, device_buffers_.elements_y, device_buffers_.elements_z,
+                                       device_buffers_.sources_q, device_buffers_.sources_q_dx, device_buffers_.sources_q_dy, device_buffers_.sources_q_dz,
+                                       device_buffers_.node_begin, device_buffers_.node_end,
+                                       level_nodes_dev,
+                                       num_level_nodes,
+                                       device_buffers_.exact_idx_x, device_buffers_.exact_idx_y, device_buffers_.exact_idx_z,
+                                       device_buffers_.denominator,
+                                       device_buffers_.clusters_q, device_buffers_.clusters_q_dx, device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
+                                       stream);
                 }
+            } else if (level_nodes_num > 0) {
+                upward_fused_cuda(num_interp_pts_per_node, num_charges_per_node_,
+                                  device_buffers_.clusters_x, device_buffers_.clusters_y, device_buffers_.clusters_z,
+                                  device_buffers_.weights,
+                                  device_buffers_.elements_x, device_buffers_.elements_y, device_buffers_.elements_z,
+                                  device_buffers_.sources_q, device_buffers_.sources_q_dx, device_buffers_.sources_q_dy, device_buffers_.sources_q_dz,
+                                  device_buffers_.node_begin, device_buffers_.node_end,
+                                  device_buffers_.level_nodes,
+                                  level_nodes_num,
+                                  device_buffers_.clusters_q, device_buffers_.clusters_q_dx, device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
+                                  stream);
             }
             timers_.upward_pass.stop();
             return;
@@ -3262,47 +3129,23 @@ void BoundaryElement::downward_pass(double* __restrict potential)
 
         if (present_ok) {
             acc_wait(acc_async_sync);
-            static bool cu_inited = false;
-            if (!cu_inited) {
-                cuInit(0);
-                cu_inited = true;
-            }
             void* stream = acc_get_cuda_stream(acc_async_sync);
-            #pragma acc host_data use_device(clusters_x_ptr, clusters_y_ptr, clusters_z_ptr, \
-                                             clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr, \
-                                             elements_x_ptr, elements_y_ptr, elements_z_ptr, \
-                                             targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr, \
-                                             weights_ptr, potential, \
-                                             node_begin_ptr, node_end_ptr, level_nodes_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-
-                for (std::size_t level = 0; level < level_count; ++level) {
-                    std::size_t level_begin = level_offsets_ptr[level];
-                    std::size_t level_end   = level_offsets_ptr[level + 1];
-                    std::size_t num_level_nodes = level_end - level_begin;
-                    if (num_level_nodes == 0) continue;
-                    const std::size_t* level_nodes_dev = level_nodes_ptr + level_begin;
-                    downward_cuda(num_interp_pts_per_node, num_charges_per_node_,
-                                  clusters_x_ptr, clusters_y_ptr, clusters_z_ptr,
-                                  clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
-                                  elements_x_ptr, elements_y_ptr, elements_z_ptr,
-                                  targets_q_ptr, targets_q_dx_ptr, targets_q_dy_ptr, targets_q_dz_ptr,
-                                  weights_ptr,
-                                  potential, potential_offset,
-                                  node_begin_ptr, node_end_ptr,
-                                  level_nodes_dev, num_level_nodes,
-                                  stream);
-                }
+            for (std::size_t level = 0; level < level_count; ++level) {
+                std::size_t level_begin = level_offsets_ptr[level];
+                std::size_t level_end   = level_offsets_ptr[level + 1];
+                std::size_t num_level_nodes = level_end - level_begin;
+                if (num_level_nodes == 0) continue;
+                const std::size_t* level_nodes_dev = device_buffers_.level_nodes + level_begin;
+                downward_cuda(num_interp_pts_per_node, num_charges_per_node_,
+                              device_buffers_.clusters_x, device_buffers_.clusters_y, device_buffers_.clusters_z,
+                              device_buffers_.clusters_p, device_buffers_.clusters_p_dx, device_buffers_.clusters_p_dy, device_buffers_.clusters_p_dz,
+                              device_buffers_.elements_x, device_buffers_.elements_y, device_buffers_.elements_z,
+                              device_buffers_.targets_q, device_buffers_.targets_q_dx, device_buffers_.targets_q_dy, device_buffers_.targets_q_dz,
+                              device_buffers_.weights,
+                              potential, potential_offset,
+                              device_buffers_.node_begin, device_buffers_.node_end,
+                              level_nodes_dev, num_level_nodes,
+                              stream);
             }
             timers_.downward_pass.stop();
             return;
@@ -3562,11 +3405,9 @@ void BoundaryElement::clear_cluster_charges()
     if (present_ok) {
         acc_wait(acc_async_sync);
         void* stream = acc_get_cuda_stream(acc_async_sync);
-        #pragma acc host_data use_device(clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr)
-        {
-            be_clear_cluster_charges_cuda(clusters_q_ptr, clusters_q_dx_ptr, clusters_q_dy_ptr, clusters_q_dz_ptr,
-                                          num_charges, stream);
-        }
+        be_clear_cluster_charges_cuda(device_buffers_.clusters_q, device_buffers_.clusters_q_dx,
+                                      device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
+                                      num_charges, stream);
         timers_.clear_cluster_charges.stop();
         return;
     }
@@ -3612,11 +3453,9 @@ void BoundaryElement::clear_cluster_potentials()
     if (present_ok) {
         acc_wait(acc_async_sync);
         void* stream = acc_get_cuda_stream(acc_async_sync);
-        #pragma acc host_data use_device(clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr)
-        {
-            be_clear_cluster_potentials_cuda(clusters_p_ptr, clusters_p_dx_ptr, clusters_p_dy_ptr, clusters_p_dz_ptr,
-                                             num_potentials, stream);
-        }
+        be_clear_cluster_potentials_cuda(device_buffers_.clusters_p, device_buffers_.clusters_p_dx,
+                                         device_buffers_.clusters_p_dy, device_buffers_.clusters_p_dz,
+                                         num_potentials, stream);
         timers_.clear_cluster_potentials.stop();
         return;
     }
@@ -3662,11 +3501,11 @@ bool BoundaryElement::validate_device_buffers_matrix_vector_(
 #ifdef OPENACC_ENABLED
     const std::size_t potential_num = potential_.size();
     if (potential_num > 0) {
-        if (!cuda_pointer_mapped(potential_new, potential_num * sizeof(double))) {
+        if (!cuda_pointer_is_device_accessible(potential_new)) {
             return false;
         }
         if (potential_old &&
-            !cuda_pointer_mapped(potential_old, potential_num * sizeof(double))) {
+            !cuda_pointer_is_device_accessible(potential_old)) {
             return false;
         }
     }
@@ -3739,11 +3578,7 @@ bool BoundaryElement::validate_device_buffers_upward_(bool use_split) const
     }
 #ifdef OPENACC_ENABLED
     if (use_split) {
-        const std::size_t n = exact_idx_x_.size();
-        return cuda_pointer_mapped(exact_idx_x_.data(), n * sizeof(int)) &&
-               cuda_pointer_mapped(exact_idx_y_.data(), n * sizeof(int)) &&
-               cuda_pointer_mapped(exact_idx_z_.data(), n * sizeof(int)) &&
-               cuda_pointer_mapped(denominator_.data(), n * sizeof(double));
+        return b.exact_idx_x && b.exact_idx_y && b.exact_idx_z && b.denominator;
     }
 #else
     (void)use_split;
@@ -3765,7 +3600,7 @@ bool BoundaryElement::validate_device_buffers_downward_(const double* potential)
     }
 #ifdef OPENACC_ENABLED
     const std::size_t num = potential_.size();
-    if (num > 0 && !cuda_pointer_mapped(potential, num * sizeof(double))) {
+    if (num > 0 && !cuda_pointer_is_device_accessible(potential)) {
         return false;
     }
 #else
@@ -3790,197 +3625,11 @@ bool BoundaryElement::validate_device_buffers_clear_cluster_potentials_() const
 
 void BoundaryElement::cache_device_buffers_() const
 {
-#ifdef OPENACC_ENABLED
-    DeviceBuffers ptrs;
-    ptrs.num_nodes = node_particles_begin_u32_.size();
-    ptrs.level_nodes_num = level_nodes_.size();
-
-    const double* clusters_x_ptr = interp_pts_.interp_x_ptr();
-    const double* clusters_y_ptr = interp_pts_.interp_y_ptr();
-    const double* clusters_z_ptr = interp_pts_.interp_z_ptr();
-
-    const double* clusters_q_ptr = interp_charge_.data();
-    const double* clusters_q_dx_ptr = interp_charge_dx_.data();
-    const double* clusters_q_dy_ptr = interp_charge_dy_.data();
-    const double* clusters_q_dz_ptr = interp_charge_dz_.data();
-
-    const double* clusters_p_ptr = interp_potential_.data();
-    const double* clusters_p_dx_ptr = interp_potential_dx_.data();
-    const double* clusters_p_dy_ptr = interp_potential_dy_.data();
-    const double* clusters_p_dz_ptr = interp_potential_dz_.data();
-
-    const double* elements_x_ptr = elements_.x_ptr();
-    const double* elements_y_ptr = elements_.y_ptr();
-    const double* elements_z_ptr = elements_.z_ptr();
-    const double* elements_nx_ptr = elements_.nx_ptr();
-    const double* elements_ny_ptr = elements_.ny_ptr();
-    const double* elements_nz_ptr = elements_.nz_ptr();
-    const double* elements_area_ptr = elements_.area_ptr();
-
-    const double* targets_q_ptr = elements_.target_charge_ptr();
-    const double* targets_q_dx_ptr = elements_.target_charge_dx_ptr();
-    const double* targets_q_dy_ptr = elements_.target_charge_dy_ptr();
-    const double* targets_q_dz_ptr = elements_.target_charge_dz_ptr();
-    const double* sources_q_ptr = elements_.source_charge_ptr();
-    const double* sources_q_dx_ptr = elements_.source_charge_dx_ptr();
-    const double* sources_q_dy_ptr = elements_.source_charge_dy_ptr();
-    const double* sources_q_dz_ptr = elements_.source_charge_dz_ptr();
-
-    const double* weights_ptr = weights_.data();
-    const double* potential_temp_ptr = potential_temp_.data();
-
-    const std::uint32_t* node_begin_ptr = node_particles_begin_u32_.data();
-    const std::uint32_t* node_end_ptr = node_particles_end_u32_.data();
-    const std::uint32_t* element_node_idx_ptr = element_node_idx_u32_.data();
-
-    const std::uint32_t* pp_offsets_ptr = pp_offsets_u32_.data();
-    const std::uint32_t* pp_sources_ptr = pp_sources_u32_.data();
-    const std::uint32_t* pc_offsets_ptr = pc_offsets_u32_.data();
-    const std::uint32_t* pc_sources_ptr = pc_sources_u32_.data();
-    const std::uint32_t* cp_offsets_ptr = cp_offsets_u32_.data();
-    const std::uint32_t* cp_sources_ptr = cp_sources_u32_.data();
-    const std::uint32_t* cc_offsets_ptr = cc_offsets_u32_.data();
-    const std::uint32_t* cc_sources_ptr = cc_sources_u32_.data();
-
-    const std::size_t* level_nodes_ptr = level_nodes_.data();
-
-    const std::size_t num_nodes = ptrs.num_nodes;
-    const std::size_t num_elements = elements_.num();
-    const std::size_t num_interp_pts =
-        static_cast<std::size_t>(interp_pts_.num_interp_pts_per_node()) * num_nodes;
-    const std::size_t num_charges =
-        static_cast<std::size_t>(num_charges_per_node_) * num_nodes;
-
-    const std::size_t weights_num = weights_.size();
-    const std::size_t potential_temp_num = potential_temp_.size();
-    const std::size_t element_node_idx_num = element_node_idx_u32_.size();
-    const std::size_t pp_offsets_num = pp_offsets_u32_.size();
-    const std::size_t pp_sources_num = pp_sources_u32_.size();
-    const std::size_t pc_offsets_num = pc_offsets_u32_.size();
-    const std::size_t pc_sources_num = pc_sources_u32_.size();
-    const std::size_t cp_offsets_num = cp_offsets_u32_.size();
-    const std::size_t cp_sources_num = cp_sources_u32_.size();
-    const std::size_t cc_offsets_num = cc_offsets_u32_.size();
-    const std::size_t cc_sources_num = cc_sources_u32_.size();
-
-    bool present_ok = true;
-    if (num_interp_pts > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(clusters_x_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_y_ptr, num_interp_pts * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_z_ptr, num_interp_pts * sizeof(double));
+    // Interop-free phase: copyin_clusters_to_device() is the only owner of
+    // populating device_buffers_. Keep this as a no-op compatibility hook.
+    if (device_state_ != CudaDeviceState::DeviceMapped) {
+        reset_device_buffers_();
     }
-    if (num_charges > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(clusters_q_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_q_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_q_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_q_dz_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_p_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_p_dx_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_p_dy_ptr, num_charges * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(clusters_p_dz_ptr, num_charges * sizeof(double));
-    }
-    if (num_elements > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(elements_x_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(elements_y_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(elements_z_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(elements_nx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(elements_ny_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(elements_nz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(elements_area_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(targets_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(targets_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(targets_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(targets_q_dz_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(sources_q_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(sources_q_dx_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(sources_q_dy_ptr, num_elements * sizeof(double));
-        present_ok = present_ok && cuda_pointer_mapped(sources_q_dz_ptr, num_elements * sizeof(double));
-    }
-    if (weights_num > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(weights_ptr, weights_num * sizeof(double));
-    }
-    if (potential_temp_num > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(potential_temp_ptr, potential_temp_num * sizeof(double));
-    }
-    if (num_nodes > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(node_begin_ptr, num_nodes * sizeof(std::uint32_t));
-        present_ok = present_ok && cuda_pointer_mapped(node_end_ptr, num_nodes * sizeof(std::uint32_t));
-    }
-    if (element_node_idx_num > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(element_node_idx_ptr, element_node_idx_num * sizeof(std::uint32_t));
-    }
-    if (pp_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(pp_offsets_ptr, pp_offsets_num * sizeof(std::uint32_t));
-    if (pp_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(pp_sources_ptr, pp_sources_num * sizeof(std::uint32_t));
-    if (pc_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(pc_offsets_ptr, pc_offsets_num * sizeof(std::uint32_t));
-    if (pc_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(pc_sources_ptr, pc_sources_num * sizeof(std::uint32_t));
-    if (cp_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(cp_offsets_ptr, cp_offsets_num * sizeof(std::uint32_t));
-    if (cp_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(cp_sources_ptr, cp_sources_num * sizeof(std::uint32_t));
-    if (cc_offsets_num > 0) present_ok = present_ok && cuda_pointer_mapped(cc_offsets_ptr, cc_offsets_num * sizeof(std::uint32_t));
-    if (cc_sources_num > 0) present_ok = present_ok && cuda_pointer_mapped(cc_sources_ptr, cc_sources_num * sizeof(std::uint32_t));
-    if (ptrs.level_nodes_num > 0) {
-        present_ok = present_ok && cuda_pointer_mapped(level_nodes_ptr, ptrs.level_nodes_num * sizeof(std::size_t));
-    }
-
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    if (!present_ok) {
-        ptrs.ready = false;
-        device_buffers_ = ptrs;
-        device_state_ = CudaDeviceState::HostOnly;
-        if (require_all) {
-            std::cerr << "[CUDA_BE] require_all set but CUDA pointers not present. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
-        return;
-    }
-
-    ptrs.clusters_x = static_cast<double*>(acc_deviceptr((void*)clusters_x_ptr));
-    ptrs.clusters_y = static_cast<double*>(acc_deviceptr((void*)clusters_y_ptr));
-    ptrs.clusters_z = static_cast<double*>(acc_deviceptr((void*)clusters_z_ptr));
-    ptrs.clusters_q = static_cast<double*>(acc_deviceptr((void*)clusters_q_ptr));
-    ptrs.clusters_q_dx = static_cast<double*>(acc_deviceptr((void*)clusters_q_dx_ptr));
-    ptrs.clusters_q_dy = static_cast<double*>(acc_deviceptr((void*)clusters_q_dy_ptr));
-    ptrs.clusters_q_dz = static_cast<double*>(acc_deviceptr((void*)clusters_q_dz_ptr));
-    ptrs.clusters_p = static_cast<double*>(acc_deviceptr((void*)clusters_p_ptr));
-    ptrs.clusters_p_dx = static_cast<double*>(acc_deviceptr((void*)clusters_p_dx_ptr));
-    ptrs.clusters_p_dy = static_cast<double*>(acc_deviceptr((void*)clusters_p_dy_ptr));
-    ptrs.clusters_p_dz = static_cast<double*>(acc_deviceptr((void*)clusters_p_dz_ptr));
-    ptrs.elements_x = static_cast<double*>(acc_deviceptr((void*)elements_x_ptr));
-    ptrs.elements_y = static_cast<double*>(acc_deviceptr((void*)elements_y_ptr));
-    ptrs.elements_z = static_cast<double*>(acc_deviceptr((void*)elements_z_ptr));
-    ptrs.elements_nx = static_cast<double*>(acc_deviceptr((void*)elements_nx_ptr));
-    ptrs.elements_ny = static_cast<double*>(acc_deviceptr((void*)elements_ny_ptr));
-    ptrs.elements_nz = static_cast<double*>(acc_deviceptr((void*)elements_nz_ptr));
-    ptrs.elements_area = static_cast<double*>(acc_deviceptr((void*)elements_area_ptr));
-    ptrs.targets_q = static_cast<double*>(acc_deviceptr((void*)targets_q_ptr));
-    ptrs.targets_q_dx = static_cast<double*>(acc_deviceptr((void*)targets_q_dx_ptr));
-    ptrs.targets_q_dy = static_cast<double*>(acc_deviceptr((void*)targets_q_dy_ptr));
-    ptrs.targets_q_dz = static_cast<double*>(acc_deviceptr((void*)targets_q_dz_ptr));
-    ptrs.sources_q = static_cast<double*>(acc_deviceptr((void*)sources_q_ptr));
-    ptrs.sources_q_dx = static_cast<double*>(acc_deviceptr((void*)sources_q_dx_ptr));
-    ptrs.sources_q_dy = static_cast<double*>(acc_deviceptr((void*)sources_q_dy_ptr));
-    ptrs.sources_q_dz = static_cast<double*>(acc_deviceptr((void*)sources_q_dz_ptr));
-    ptrs.weights = static_cast<double*>(acc_deviceptr((void*)weights_ptr));
-    ptrs.potential_temp = static_cast<double*>(acc_deviceptr((void*)potential_temp_ptr));
-    ptrs.node_begin = static_cast<std::uint32_t*>(acc_deviceptr((void*)node_begin_ptr));
-    ptrs.node_end = static_cast<std::uint32_t*>(acc_deviceptr((void*)node_end_ptr));
-    ptrs.element_node_idx = static_cast<std::uint32_t*>(acc_deviceptr((void*)element_node_idx_ptr));
-    ptrs.pp_offsets = static_cast<std::uint32_t*>(acc_deviceptr((void*)pp_offsets_ptr));
-    ptrs.pp_sources = static_cast<std::uint32_t*>(acc_deviceptr((void*)pp_sources_ptr));
-    ptrs.pc_offsets = static_cast<std::uint32_t*>(acc_deviceptr((void*)pc_offsets_ptr));
-    ptrs.pc_sources = static_cast<std::uint32_t*>(acc_deviceptr((void*)pc_sources_ptr));
-    ptrs.cp_offsets = static_cast<std::uint32_t*>(acc_deviceptr((void*)cp_offsets_ptr));
-    ptrs.cp_sources = static_cast<std::uint32_t*>(acc_deviceptr((void*)cp_sources_ptr));
-    ptrs.cc_offsets = static_cast<std::uint32_t*>(acc_deviceptr((void*)cc_offsets_ptr));
-    ptrs.cc_sources = static_cast<std::uint32_t*>(acc_deviceptr((void*)cc_sources_ptr));
-    ptrs.level_nodes = static_cast<std::size_t*>(acc_deviceptr((void*)level_nodes_ptr));
-    ptrs.ready = true;
-    device_buffers_ = ptrs;
-    device_state_ = CudaDeviceState::DeviceMapped;
-#else
-    reset_device_buffers_();
-#endif
 }
 
 void BoundaryElement::CudaTimerQueue::begin(Timer& timer, void* stream)
@@ -4029,20 +3678,16 @@ void BoundaryElement::copyin_clusters_to_device() const
     timers_.copyin_clusters_to_device.start();
 
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all =
-        (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    if (require_all) {
-        if (device_state_ == CudaDeviceState::DeviceMapped && device_buffers_.ready) {
-            timers_.copyin_clusters_to_device.stop();
-            return;
-        }
+    if (device_state_ == CudaDeviceState::DeviceMapped && device_buffers_.ready) {
+        timers_.copyin_clusters_to_device.stop();
+        return;
+    }
 
-        if (!elements_.cuda_device_ready()) {
-            std::cerr << "[CUDA_BE] require_all set but Elements CUDA pointers not ready. "
-                      << "Did you call elements.copyin_to_device()?\n";
-            std::exit(1);
-        }
+    if (!elements_.cuda_device_ready()) {
+        std::cerr << "[CUDA_BE] Elements CUDA pointers not ready. "
+                  << "Did you call elements.copyin_to_device()?\n";
+        std::exit(1);
+    }
 
         DeviceBuffers ptrs;
         ptrs.num_nodes = node_particles_begin_u32_.size();
@@ -4061,12 +3706,12 @@ void BoundaryElement::copyin_clusters_to_device() const
         const std::size_t num_charges = interp_charge_.size();
         const std::size_t potential_num = potential_temp_.size();
 
-        if (num_interp_pts > 0) {
-            if (!interp_pts_.cuda_device_ready()) {
-                std::cerr << "[CUDA_BE] require_all set but interp_pts CUDA buffers are not ready. "
-                          << "Did you call interp_pts.copyin_to_device()?\n";
-                std::exit(1);
-            }
+    if (num_interp_pts > 0) {
+        if (!interp_pts_.cuda_device_ready()) {
+            std::cerr << "[CUDA_BE] interp_pts CUDA buffers are not ready. "
+                      << "Did you call interp_pts.copyin_to_device()?\n";
+            std::exit(1);
+        }
             const auto interp_view = interp_pts_.device_view();
             if (interp_view.num_interp_pts != num_interp_pts ||
                 !interp_view.interp_x || !interp_view.interp_y || !interp_view.interp_z) {
@@ -4079,26 +3724,26 @@ void BoundaryElement::copyin_clusters_to_device() const
             ptrs.owns_clusters_xyz = false;
         }
 
-        if (num_charges > 0) {
-            check(cudaMalloc(&ptrs.clusters_q, num_charges * sizeof(double)), "cudaMalloc clusters_q");
-            check(cudaMalloc(&ptrs.clusters_q_dx, num_charges * sizeof(double)), "cudaMalloc clusters_q_dx");
-            check(cudaMalloc(&ptrs.clusters_q_dy, num_charges * sizeof(double)), "cudaMalloc clusters_q_dy");
-            check(cudaMalloc(&ptrs.clusters_q_dz, num_charges * sizeof(double)), "cudaMalloc clusters_q_dz");
-            check(cudaMalloc(&ptrs.clusters_p, num_charges * sizeof(double)), "cudaMalloc clusters_p");
-            check(cudaMalloc(&ptrs.clusters_p_dx, num_charges * sizeof(double)), "cudaMalloc clusters_p_dx");
-            check(cudaMalloc(&ptrs.clusters_p_dy, num_charges * sizeof(double)), "cudaMalloc clusters_p_dy");
-            check(cudaMalloc(&ptrs.clusters_p_dz, num_charges * sizeof(double)), "cudaMalloc clusters_p_dz");
-            check(cudaMemset(ptrs.clusters_q, 0, num_charges * sizeof(double)), "cudaMemset clusters_q");
-            check(cudaMemset(ptrs.clusters_q_dx, 0, num_charges * sizeof(double)), "cudaMemset clusters_q_dx");
-            check(cudaMemset(ptrs.clusters_q_dy, 0, num_charges * sizeof(double)), "cudaMemset clusters_q_dy");
-            check(cudaMemset(ptrs.clusters_q_dz, 0, num_charges * sizeof(double)), "cudaMemset clusters_q_dz");
-            check(cudaMemset(ptrs.clusters_p, 0, num_charges * sizeof(double)), "cudaMemset clusters_p");
-            check(cudaMemset(ptrs.clusters_p_dx, 0, num_charges * sizeof(double)), "cudaMemset clusters_p_dx");
-            check(cudaMemset(ptrs.clusters_p_dy, 0, num_charges * sizeof(double)), "cudaMemset clusters_p_dy");
-            check(cudaMemset(ptrs.clusters_p_dz, 0, num_charges * sizeof(double)), "cudaMemset clusters_p_dz");
-        }
+    if (num_charges > 0) {
+        check(cudaMalloc(&ptrs.clusters_q, num_charges * sizeof(double)), "cudaMalloc clusters_q");
+        check(cudaMalloc(&ptrs.clusters_q_dx, num_charges * sizeof(double)), "cudaMalloc clusters_q_dx");
+        check(cudaMalloc(&ptrs.clusters_q_dy, num_charges * sizeof(double)), "cudaMalloc clusters_q_dy");
+        check(cudaMalloc(&ptrs.clusters_q_dz, num_charges * sizeof(double)), "cudaMalloc clusters_q_dz");
+        check(cudaMalloc(&ptrs.clusters_p, num_charges * sizeof(double)), "cudaMalloc clusters_p");
+        check(cudaMalloc(&ptrs.clusters_p_dx, num_charges * sizeof(double)), "cudaMalloc clusters_p_dx");
+        check(cudaMalloc(&ptrs.clusters_p_dy, num_charges * sizeof(double)), "cudaMalloc clusters_p_dy");
+        check(cudaMalloc(&ptrs.clusters_p_dz, num_charges * sizeof(double)), "cudaMalloc clusters_p_dz");
+        check(cudaMemset(ptrs.clusters_q, 0, num_charges * sizeof(double)), "cudaMemset clusters_q");
+        check(cudaMemset(ptrs.clusters_q_dx, 0, num_charges * sizeof(double)), "cudaMemset clusters_q_dx");
+        check(cudaMemset(ptrs.clusters_q_dy, 0, num_charges * sizeof(double)), "cudaMemset clusters_q_dy");
+        check(cudaMemset(ptrs.clusters_q_dz, 0, num_charges * sizeof(double)), "cudaMemset clusters_q_dz");
+        check(cudaMemset(ptrs.clusters_p, 0, num_charges * sizeof(double)), "cudaMemset clusters_p");
+        check(cudaMemset(ptrs.clusters_p_dx, 0, num_charges * sizeof(double)), "cudaMemset clusters_p_dx");
+        check(cudaMemset(ptrs.clusters_p_dy, 0, num_charges * sizeof(double)), "cudaMemset clusters_p_dy");
+        check(cudaMemset(ptrs.clusters_p_dz, 0, num_charges * sizeof(double)), "cudaMemset clusters_p_dz");
+    }
 
-        if (!weights_.empty()) {
+    if (!weights_.empty()) {
             const std::size_t weights_num = weights_.size();
             check(cudaMalloc(&ptrs.weights, weights_num * sizeof(double)), "cudaMalloc weights");
             check(cudaMemcpy(ptrs.weights, weights_.data(), weights_num * sizeof(double),
@@ -4106,15 +3751,15 @@ void BoundaryElement::copyin_clusters_to_device() const
                   "cudaMemcpy weights");
         }
 
-        if (potential_num > 0) {
+    if (potential_num > 0) {
             check(cudaMalloc(&ptrs.potential_temp, potential_num * sizeof(double)),
                   "cudaMalloc potential_temp");
             check(cudaMemset(ptrs.potential_temp, 0, potential_num * sizeof(double)),
                   "cudaMemset potential_temp");
         }
 
-        const std::size_t max_particles = exact_idx_x_.size();
-        if (max_particles > 0) {
+    const std::size_t max_particles = exact_idx_x_.size();
+    if (max_particles > 0) {
             check(cudaMalloc(&ptrs.node_begin, ptrs.num_nodes * sizeof(std::uint32_t)),
                   "cudaMalloc node_begin");
             check(cudaMalloc(&ptrs.node_end, ptrs.num_nodes * sizeof(std::uint32_t)),
@@ -4218,50 +3863,60 @@ void BoundaryElement::copyin_clusters_to_device() const
                       "cudaMemcpy cc_sources");
             }
 
-            if (!level_nodes_.empty()) {
-                check(cudaMalloc(&ptrs.level_nodes, level_nodes_.size() * sizeof(std::size_t)),
-                      "cudaMalloc level_nodes");
-                check(cudaMemcpy(ptrs.level_nodes, level_nodes_.data(),
-                                 level_nodes_.size() * sizeof(std::size_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy level_nodes");
-            }
+        if (!exact_idx_x_.empty()) {
+            check(cudaMalloc(&ptrs.exact_idx_x, exact_idx_x_.size() * sizeof(int)),
+                  "cudaMalloc exact_idx_x");
+            check(cudaMalloc(&ptrs.exact_idx_y, exact_idx_y_.size() * sizeof(int)),
+                  "cudaMalloc exact_idx_y");
+            check(cudaMalloc(&ptrs.exact_idx_z, exact_idx_z_.size() * sizeof(int)),
+                  "cudaMalloc exact_idx_z");
+            check(cudaMalloc(&ptrs.denominator, denominator_.size() * sizeof(double)),
+                  "cudaMalloc denominator");
         }
 
-        const auto elements_view = elements_.device_view();
-        if (elements_view.num == 0 ||
-            !elements_view.x || !elements_view.y || !elements_view.z ||
-            !elements_view.nx || !elements_view.ny || !elements_view.nz ||
-            !elements_view.area ||
-            !elements_view.target_q || !elements_view.target_q_dx ||
-            !elements_view.target_q_dy || !elements_view.target_q_dz ||
-            !elements_view.source_q || !elements_view.source_q_dx ||
-            !elements_view.source_q_dy || !elements_view.source_q_dz) {
-            std::cerr << "[CUDA_BE] Elements DeviceView is not valid for matrix-vector inputs.\n";
-            std::exit(1);
+        if (!level_nodes_.empty()) {
+            check(cudaMalloc(&ptrs.level_nodes, level_nodes_.size() * sizeof(std::size_t)),
+                  "cudaMalloc level_nodes");
+            check(cudaMemcpy(ptrs.level_nodes, level_nodes_.data(),
+                             level_nodes_.size() * sizeof(std::size_t),
+                             cudaMemcpyHostToDevice),
+                  "cudaMemcpy level_nodes");
         }
-        ptrs.elements_x = elements_view.x;
-        ptrs.elements_y = elements_view.y;
-        ptrs.elements_z = elements_view.z;
-        ptrs.elements_nx = elements_view.nx;
-        ptrs.elements_ny = elements_view.ny;
-        ptrs.elements_nz = elements_view.nz;
-        ptrs.elements_area = elements_view.area;
-        ptrs.targets_q = elements_view.target_q;
-        ptrs.targets_q_dx = elements_view.target_q_dx;
-        ptrs.targets_q_dy = elements_view.target_q_dy;
-        ptrs.targets_q_dz = elements_view.target_q_dz;
-        ptrs.sources_q = elements_view.source_q;
-        ptrs.sources_q_dx = elements_view.source_q_dx;
-        ptrs.sources_q_dy = elements_view.source_q_dy;
-        ptrs.sources_q_dz = elements_view.source_q_dz;
-
-        ptrs.ready = true;
-        device_buffers_ = ptrs;
-        device_state_ = CudaDeviceState::DeviceMapped;
-        timers_.copyin_clusters_to_device.stop();
-        return;
     }
+
+    const auto elements_view = elements_.device_view();
+    if (elements_view.num == 0 ||
+        !elements_view.x || !elements_view.y || !elements_view.z ||
+        !elements_view.nx || !elements_view.ny || !elements_view.nz ||
+        !elements_view.area ||
+        !elements_view.target_q || !elements_view.target_q_dx ||
+        !elements_view.target_q_dy || !elements_view.target_q_dz ||
+        !elements_view.source_q || !elements_view.source_q_dx ||
+        !elements_view.source_q_dy || !elements_view.source_q_dz) {
+        std::cerr << "[CUDA_BE] Elements DeviceView is not valid for matrix-vector inputs.\n";
+        std::exit(1);
+    }
+    ptrs.elements_x = elements_view.x;
+    ptrs.elements_y = elements_view.y;
+    ptrs.elements_z = elements_view.z;
+    ptrs.elements_nx = elements_view.nx;
+    ptrs.elements_ny = elements_view.ny;
+    ptrs.elements_nz = elements_view.nz;
+    ptrs.elements_area = elements_view.area;
+    ptrs.targets_q = elements_view.target_q;
+    ptrs.targets_q_dx = elements_view.target_q_dx;
+    ptrs.targets_q_dy = elements_view.target_q_dy;
+    ptrs.targets_q_dz = elements_view.target_q_dz;
+    ptrs.sources_q = elements_view.source_q;
+    ptrs.sources_q_dx = elements_view.source_q_dx;
+    ptrs.sources_q_dy = elements_view.source_q_dy;
+    ptrs.sources_q_dz = elements_view.source_q_dz;
+
+    ptrs.ready = true;
+    device_buffers_ = ptrs;
+    device_state_ = CudaDeviceState::DeviceMapped;
+    timers_.copyin_clusters_to_device.stop();
+    return;
 #endif
 
 #ifdef OPENACC_ENABLED
@@ -4295,7 +3950,6 @@ void BoundaryElement::copyin_clusters_to_device() const
     const int* exact_idx_y_ptr = exact_idx_y_.data();
     const int* exact_idx_z_ptr = exact_idx_z_.data();
     const double* denominator_ptr = denominator_.data();
-    std::size_t max_particles = exact_idx_x_.size();
 
     const std::uint32_t* node_begin_ptr = node_particles_begin_u32_.data();
     const std::uint32_t* node_end_ptr = node_particles_end_u32_.data();
@@ -4357,44 +4011,43 @@ void BoundaryElement::delete_clusters_from_device() const
     timers_.delete_clusters_from_device.start();
 
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all =
-        (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    if (require_all) {
-        if (device_state_ == CudaDeviceState::DeviceMapped && device_buffers_.ready) {
-            if (device_buffers_.owns_clusters_xyz) {
-                cudaFree(device_buffers_.clusters_x);
-                cudaFree(device_buffers_.clusters_y);
-                cudaFree(device_buffers_.clusters_z);
-            }
-            cudaFree(device_buffers_.clusters_q);
-            cudaFree(device_buffers_.clusters_q_dx);
-            cudaFree(device_buffers_.clusters_q_dy);
-            cudaFree(device_buffers_.clusters_q_dz);
-            cudaFree(device_buffers_.clusters_p);
-            cudaFree(device_buffers_.clusters_p_dx);
-            cudaFree(device_buffers_.clusters_p_dy);
-            cudaFree(device_buffers_.clusters_p_dz);
-            cudaFree(device_buffers_.weights);
-            cudaFree(device_buffers_.potential_temp);
-            cudaFree(device_buffers_.node_begin);
-            cudaFree(device_buffers_.node_end);
-            cudaFree(device_buffers_.element_node_idx);
-            cudaFree(device_buffers_.pp_offsets);
-            cudaFree(device_buffers_.pp_sources);
-            cudaFree(device_buffers_.pc_offsets);
-            cudaFree(device_buffers_.pc_sources);
-            cudaFree(device_buffers_.cp_offsets);
-            cudaFree(device_buffers_.cp_sources);
-            cudaFree(device_buffers_.cc_offsets);
-            cudaFree(device_buffers_.cc_sources);
-            cudaFree(device_buffers_.level_nodes);
-            device_buffers_ = DeviceBuffers{};
-            device_state_ = CudaDeviceState::HostOnly;
+    if (device_state_ == CudaDeviceState::DeviceMapped && device_buffers_.ready) {
+        if (device_buffers_.owns_clusters_xyz) {
+            cudaFree(device_buffers_.clusters_x);
+            cudaFree(device_buffers_.clusters_y);
+            cudaFree(device_buffers_.clusters_z);
         }
-        timers_.delete_clusters_from_device.stop();
-        return;
+        cudaFree(device_buffers_.clusters_q);
+        cudaFree(device_buffers_.clusters_q_dx);
+        cudaFree(device_buffers_.clusters_q_dy);
+        cudaFree(device_buffers_.clusters_q_dz);
+        cudaFree(device_buffers_.clusters_p);
+        cudaFree(device_buffers_.clusters_p_dx);
+        cudaFree(device_buffers_.clusters_p_dy);
+        cudaFree(device_buffers_.clusters_p_dz);
+        cudaFree(device_buffers_.weights);
+        cudaFree(device_buffers_.potential_temp);
+        cudaFree(device_buffers_.exact_idx_x);
+        cudaFree(device_buffers_.exact_idx_y);
+        cudaFree(device_buffers_.exact_idx_z);
+        cudaFree(device_buffers_.denominator);
+        cudaFree(device_buffers_.node_begin);
+        cudaFree(device_buffers_.node_end);
+        cudaFree(device_buffers_.element_node_idx);
+        cudaFree(device_buffers_.pp_offsets);
+        cudaFree(device_buffers_.pp_sources);
+        cudaFree(device_buffers_.pc_offsets);
+        cudaFree(device_buffers_.pc_sources);
+        cudaFree(device_buffers_.cp_offsets);
+        cudaFree(device_buffers_.cp_sources);
+        cudaFree(device_buffers_.cc_offsets);
+        cudaFree(device_buffers_.cc_sources);
+        cudaFree(device_buffers_.level_nodes);
+        device_buffers_ = DeviceBuffers{};
+        device_state_ = CudaDeviceState::HostOnly;
     }
+    timers_.delete_clusters_from_device.stop();
+    return;
 #endif
 
 #ifdef OPENACC_ENABLED

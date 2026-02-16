@@ -103,6 +103,10 @@ private:
         double* sources_q_dz = nullptr;
         double* weights = nullptr;
         double* potential_temp = nullptr;
+        int* exact_idx_x = nullptr;
+        int* exact_idx_y = nullptr;
+        int* exact_idx_z = nullptr;
+        double* denominator = nullptr;
         std::uint32_t* node_begin = nullptr;
         std::uint32_t* node_end = nullptr;
         std::uint32_t* element_node_idx = nullptr;
@@ -245,6 +249,10 @@ public:
         double* sources_q_dz = nullptr;
         double* weights = nullptr;
         double* potential_temp = nullptr;
+        int* exact_idx_x = nullptr;
+        int* exact_idx_y = nullptr;
+        int* exact_idx_z = nullptr;
+        double* denominator = nullptr;
         std::uint32_t* node_begin = nullptr;
         std::uint32_t* node_end = nullptr;
         std::uint32_t* element_node_idx = nullptr;
@@ -297,6 +305,10 @@ public:
         view.sources_q_dz = device_buffers_.sources_q_dz;
         view.weights = device_buffers_.weights;
         view.potential_temp = device_buffers_.potential_temp;
+        view.exact_idx_x = device_buffers_.exact_idx_x;
+        view.exact_idx_y = device_buffers_.exact_idx_y;
+        view.exact_idx_z = device_buffers_.exact_idx_z;
+        view.denominator = device_buffers_.denominator;
         view.node_begin = device_buffers_.node_begin;
         view.node_end = device_buffers_.node_end;
         view.element_node_idx = device_buffers_.element_node_idx;
