@@ -149,16 +149,6 @@ void InterpolationPoints::copyin_to_device() const
             std::abort();
         }
     }
-#elif defined(OPENACC_ENABLED)
-    const double* x_ptr = interp_x_.data();
-    const double* y_ptr = interp_y_.data();
-    const double* z_ptr = interp_z_.data();
-    
-    std::size_t x_num = interp_x_.size();
-    std::size_t y_num = interp_y_.size();
-    std::size_t z_num = interp_z_.size();
-    
-    #pragma acc enter data create(x_ptr[0:x_num], y_ptr[0:y_num], z_ptr[0:z_num])
 #endif
 
 //    timers_.copyin_to_device.stop();
@@ -176,16 +166,6 @@ void InterpolationPoints::delete_from_device() const
     CUDA_FREE_AND_NULL(buf.interp_z_dev);
     buf = DeviceBuffers{};
     device_state_ = CudaDeviceState::HostOnly;
-#elif defined(OPENACC_ENABLED)
-    const double* x_ptr = interp_x_.data();
-    const double* y_ptr = interp_y_.data();
-    const double* z_ptr = interp_z_.data();
-    
-    std::size_t x_num = interp_x_.size();
-    std::size_t y_num = interp_y_.size();
-    std::size_t z_num = interp_z_.size();
-    
-    #pragma acc exit data delete(x_ptr[0:x_num], y_ptr[0:y_num], z_ptr[0:z_num])
 #endif
 
 //    timers_.delete_from_device.stop();

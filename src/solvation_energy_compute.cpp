@@ -740,14 +740,10 @@ void SolvationEnergyCompute::upward_pass()
                 CUDA_FREE_AND_NULL(exact_idx_y_dev);
                 CUDA_FREE_AND_NULL(exact_idx_z_dev);
                 CUDA_FREE_AND_NULL(denominator_dev);
-                #ifdef USE_CUDA_CC
                 if (buf.weights_up_dev) {
                     CUDA_FREE_AND_NULL(buf.weights_up_dev);
                     buf.weights_up_num = 0;
                 }
-                #elif defined(OPENACC_ENABLED)
-                #pragma acc exit data delete(weights_ptr[0:weights_num])
-                #endif
                 return;
             }
         }
@@ -891,8 +887,6 @@ void SolvationEnergyCompute::upward_pass()
         CUDA_FREE_AND_NULL(buf.weights_up_dev);
         buf.weights_up_num = 0;
     }
-#elif defined(OPENACC_ENABLED)
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
 #endif
 
 //    timers_.upward_pass.stop();
@@ -1003,14 +997,10 @@ void SolvationEnergyCompute::downward_pass()
                 CUDA_CHECK_LAST_KERNEL();
             }
             CUDA_SYNC_AND_CHECK();
-            #ifdef USE_CUDA_CC
             if (buf.weights_down_dev) {
                 CUDA_FREE_AND_NULL(buf.weights_down_dev);
                 buf.weights_down_num = 0;
             }
-            #elif defined(OPENACC_ENABLED)
-            #pragma acc exit data delete(weights_ptr[0:weights_num])
-            #endif
             return;
         }
         if (require_all) {
@@ -1128,8 +1118,6 @@ void SolvationEnergyCompute::downward_pass()
         CUDA_FREE_AND_NULL(buf.weights_down_dev);
         buf.weights_down_num = 0;
     }
-#elif defined(OPENACC_ENABLED)
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
 #endif
 
 //    timers_.downward_pass.stop();
@@ -1318,26 +1306,6 @@ void SolvationEnergyCompute::copyin_clusters_to_device() const
             std::exit(1);
         }
     }
-#elif defined(OPENACC_ENABLED)
-    const double* q_ptr = mol_interp_charge_.data();
-    std::size_t q_num   = mol_interp_charge_.size();
-    
-    const double* p_ptr    = elem_interp_potential_.data();
-    const double* p_dx_ptr = elem_interp_potential_dx_.data();
-    const double* p_dy_ptr = elem_interp_potential_dy_.data();
-    const double* p_dz_ptr = elem_interp_potential_dz_.data();
-    
-    std::size_t p_num    = elem_interp_potential_.size();
-    std::size_t p_dx_num = elem_interp_potential_dx_.size();
-    std::size_t p_dy_num = elem_interp_potential_dy_.size();
-    std::size_t p_dz_num = elem_interp_potential_dz_.size();
-
-    const double* solv_eng_ptr = solv_eng_vec_.data();
-    std::size_t solv_eng_num   = solv_eng_vec_.size();
-    
-    #pragma acc enter data copyin(q_ptr[0:q_num], p_ptr[0:p_num], \
-                                  p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num])
-    #pragma acc enter data copyin(solv_eng_ptr[0:solv_eng_num])
 #endif
 
 //    timers_.copyin_clusters_to_device.stop();
@@ -1384,26 +1352,6 @@ void SolvationEnergyCompute::delete_clusters_from_device() const
         device_state_ = CudaDeviceState::HostOnly;
     }
     device_state_ = CudaDeviceState::HostOnly;
-#elif defined(OPENACC_ENABLED)
-    const double* q_ptr = mol_interp_charge_.data();
-    std::size_t q_num   = mol_interp_charge_.size();
-    
-    const double* p_ptr    = elem_interp_potential_.data();
-    const double* p_dx_ptr = elem_interp_potential_dx_.data();
-    const double* p_dy_ptr = elem_interp_potential_dy_.data();
-    const double* p_dz_ptr = elem_interp_potential_dz_.data();
-    
-    std::size_t p_num    = elem_interp_potential_.size();
-    std::size_t p_dx_num = elem_interp_potential_dx_.size();
-    std::size_t p_dy_num = elem_interp_potential_dy_.size();
-    std::size_t p_dz_num = elem_interp_potential_dz_.size();
-
-    const double* solv_eng_ptr = solv_eng_vec_.data();
-    std::size_t solv_eng_num   = solv_eng_vec_.size();
-    
-    #pragma acc exit data delete(q_ptr[0:q_num], p_ptr[0:p_num], \
-                                 p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num])
-    #pragma acc exit data copyout(solv_eng_ptr[0:solv_eng_num])
 #endif
 
 //    timers_.delete_clusters_from_device.stop();

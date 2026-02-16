@@ -268,9 +268,6 @@ void Output::compute_solvation_energy()
     }
 #endif
 
-#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
-    #pragma acc enter data copyin(potential_ptr[0:potential_num])
-#endif
     for (std::size_t i = 0; i < num_elems; ++i) {
 
         for (std::size_t j = 0; j < num_atoms; ++j) {
@@ -299,9 +296,6 @@ void Output::compute_solvation_energy()
                               * (L1 * potential_ptr[i] + L2 * potential_ptr[potential_offset_ + i]);
         }
     }
-#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
-    #pragma acc exit data delete(potential_ptr[0:potential_num])
-#endif
     solvation_energy_ = solvation_energy;
 
     timers_.compute_solvation_energy.stop();
@@ -325,9 +319,6 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     std::size_t potential_num = potential_.size();
     const double* potential_device_ptr = nullptr;
 
-#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
-    #pragma acc enter data copyin(potential_ptr[0:potential_num])
-#endif
 #ifdef USE_CUDA_CC
     auto &buf = device_buffers_;
     if (debug_progress) {
@@ -395,8 +386,6 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     if (debug_progress) {
         std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): potential cleanup end\n";
     }
-#elif defined(OPENACC_ENABLED)
-    #pragma acc exit data delete(potential_ptr[0:potential_num])
 #endif
 
     timers_.compute_solvation_energy.stop();

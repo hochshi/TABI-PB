@@ -812,29 +812,6 @@ void CoulombicEnergyCompute::copyin_clusters_to_device() const
             std::abort();
         }
     }
-#elif defined(OPENACC_ENABLED)
-    const double* q_ptr = mol_interp_charge_.data();
-    std::size_t q_num   = mol_interp_charge_.size();
-    
-    const double* p_ptr = mol_interp_potential_.data();
-    std::size_t p_num   = mol_interp_potential_.size();
-
-    const double* coul_eng_ptr = coul_eng_vec_.data();
-    std::size_t coul_eng_num   = coul_eng_vec_.size();
-
-    const double* weights_ptr = mol_weights_.data();
-    std::size_t weights_num   = mol_weights_.size();
-    int* exact_idx_x_ptr      = exact_idx_x_.data();
-    int* exact_idx_y_ptr      = exact_idx_y_.data();
-    int* exact_idx_z_ptr      = exact_idx_z_.data();
-    double* denominator_ptr   = denominator_.data();
-    std::size_t scratch_num   = max_mol_particles_per_node_;
-    
-    #pragma acc enter data copyin(q_ptr[0:q_num], p_ptr[0:p_num])
-    #pragma acc enter data copyin(coul_eng_ptr[0:coul_eng_num])
-    #pragma acc enter data copyin(weights_ptr[0:weights_num])
-    #pragma acc enter data create(exact_idx_x_ptr[0:scratch_num], exact_idx_y_ptr[0:scratch_num], \
-                                  exact_idx_z_ptr[0:scratch_num], denominator_ptr[0:scratch_num])
 #endif
 
 //    timers_.copyin_clusters_to_device.stop();
@@ -874,29 +851,6 @@ void CoulombicEnergyCompute::delete_clusters_from_device() const
     CUDA_FREE_AND_NULL(buf.denominator_dev);
     buf = DeviceBuffers{};
     device_state_ = CudaDeviceState::HostOnly;
-#elif defined(OPENACC_ENABLED)
-    const double* q_ptr = mol_interp_charge_.data();
-    std::size_t q_num   = mol_interp_charge_.size();
-    
-    const double* p_ptr = mol_interp_potential_.data();
-    std::size_t p_num   = mol_interp_potential_.size();
-    
-    const double* coul_eng_ptr = coul_eng_vec_.data();
-    std::size_t coul_eng_num   = coul_eng_vec_.size();
-
-    const double* weights_ptr = mol_weights_.data();
-    std::size_t weights_num   = mol_weights_.size();
-    int* exact_idx_x_ptr      = exact_idx_x_.data();
-    int* exact_idx_y_ptr      = exact_idx_y_.data();
-    int* exact_idx_z_ptr      = exact_idx_z_.data();
-    double* denominator_ptr   = denominator_.data();
-    std::size_t scratch_num   = max_mol_particles_per_node_;
-
-    #pragma acc exit data delete(q_ptr[0:q_num], p_ptr[0:p_num])
-    #pragma acc exit data copyout(coul_eng_ptr[0:coul_eng_num])
-    #pragma acc exit data delete(weights_ptr[0:weights_num], \
-                                 exact_idx_x_ptr[0:scratch_num], exact_idx_y_ptr[0:scratch_num], \
-                                 exact_idx_z_ptr[0:scratch_num], denominator_ptr[0:scratch_num])
 #endif
 
 //    timers_.delete_clusters_from_device.stop();

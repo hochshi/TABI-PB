@@ -145,9 +145,6 @@ void Molecule::copyin_to_device() const {
                       stream);
   }
 
-#ifdef OPENACC_ENABLED
-#endif
-
   CUDA_SYNC_AND_CHECK();
   buf.ready = true;
   device_state_ = CudaDeviceState::DeviceMapped;
@@ -161,19 +158,6 @@ void Molecule::copyin_to_device() const {
       std::abort();
     }
   }
-#elif defined(OPENACC_ENABLED)
-  const double *x_ptr = x_.data();
-  const double *y_ptr = y_.data();
-  const double *z_ptr = z_.data();
-  const double *charge_ptr = charge_.data();
-
-  std::size_t x_num = x_.size();
-  std::size_t y_num = y_.size();
-  std::size_t z_num = z_.size();
-  std::size_t charge_num = charge_.size();
-
-#pragma acc enter data copyin(x_ptr[0 : x_num], y_ptr[0 : y_num],              \
-                              z_ptr[0 : z_num], charge_ptr[0 : charge_num])
 #endif
 
   timers_.copyin_to_device.stop();
@@ -191,13 +175,6 @@ void Molecule::delete_from_device() const {
   buf.num_particles = 0;
   buf.ready = false;
   device_state_ = CudaDeviceState::HostOnly;
-#elif defined(OPENACC_ENABLED)
-  const double *x_ptr = x_.data();
-  const double *y_ptr = y_.data();
-  const double *z_ptr = z_.data();
-  const double *charge_ptr = charge_.data();
-
-#pragma acc exit data delete (x_ptr, y_ptr, z_ptr, charge_ptr)
 #endif
 
   timers_.delete_from_device.stop();

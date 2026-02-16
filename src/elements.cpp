@@ -799,59 +799,6 @@ void Elements::copyin_to_device() const {
   }
 #endif
 
-#if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
-  const double *x_ptr = x_.data();
-  const double *y_ptr = y_.data();
-  const double *z_ptr = z_.data();
-
-  std::size_t x_num = x_.size();
-  std::size_t y_num = y_.size();
-  std::size_t z_num = z_.size();
-
-  const double *nx_ptr = nx_.data();
-  const double *ny_ptr = ny_.data();
-  const double *nz_ptr = nz_.data();
-
-  std::size_t nx_num = nx_.size();
-  std::size_t ny_num = ny_.size();
-  std::size_t nz_num = nz_.size();
-
-  const double *area_ptr = area_.data();
-  std::size_t area_num = area_.size();
-
-  const double *source_term_ptr = source_term_.data();
-  std::size_t source_term_num = source_term_.size();
-
-  const double *tq_ptr = target_charge_.data();
-  const double *tq_dx_ptr = target_charge_dx_.data();
-  const double *tq_dy_ptr = target_charge_dy_.data();
-  const double *tq_dz_ptr = target_charge_dz_.data();
-
-  std::size_t tq_num = target_charge_.size();
-  std::size_t tq_dx_num = target_charge_dx_.size();
-  std::size_t tq_dy_num = target_charge_dy_.size();
-  std::size_t tq_dz_num = target_charge_dz_.size();
-
-  const double *sq_ptr = source_charge_.data();
-  const double *sq_dx_ptr = source_charge_dx_.data();
-  const double *sq_dy_ptr = source_charge_dy_.data();
-  const double *sq_dz_ptr = source_charge_dz_.data();
-
-  std::size_t sq_num = source_charge_.size();
-  std::size_t sq_dx_num = source_charge_dx_.size();
-  std::size_t sq_dy_num = source_charge_dy_.size();
-  std::size_t sq_dz_num = source_charge_dz_.size();
-
-#pragma acc enter data copyin(                                                 \
-    x_ptr[0 : x_num], y_ptr[0 : y_num], z_ptr[0 : z_num], nx_ptr[0 : nx_num],  \
-    ny_ptr[0 : ny_num], nz_ptr[0 : nz_num], area_ptr[0 : area_num])
-#pragma acc enter data create(                                                 \
-    source_term_ptr[0 : source_term_num], tq_ptr[0 : tq_num],                  \
-    tq_dx_ptr[0 : tq_dx_num], tq_dy_ptr[0 : tq_dy_num],                        \
-    tq_dz_ptr[0 : tq_dz_num], sq_ptr[0 : sq_num], sq_dx_ptr[0 : sq_dx_num],    \
-    sq_dy_ptr[0 : sq_dy_num], sq_dz_ptr[0 : sq_dz_num])
-#endif
-
   timers_.copyin_to_device.stop();
 }
 
@@ -868,11 +815,6 @@ void Elements::update_source_term_on_host() {
                     source_term_num * sizeof(double),
                     cudaMemcpyDeviceToHost, stream);
   CUDA_CHECK(cudaStreamSynchronize(stream));
-#elif defined(OPENACC_ENABLED)
-  const double *source_term_ptr = source_term_.data();
-  std::size_t source_term_num = source_term_.size();
-
-#pragma acc update self(source_term_ptr[0 : source_term_num])
 #endif
 }
 
@@ -900,57 +842,6 @@ void Elements::delete_from_device() const {
     reset_device_buffers_();
   }
   device_state_ = CudaDeviceState::HostOnly;
-#elif defined(OPENACC_ENABLED)
-  const double *x_ptr = x_.data();
-  const double *y_ptr = y_.data();
-  const double *z_ptr = z_.data();
-
-  std::size_t x_num = x_.size();
-  std::size_t y_num = y_.size();
-  std::size_t z_num = z_.size();
-
-  const double *nx_ptr = nx_.data();
-  const double *ny_ptr = ny_.data();
-  const double *nz_ptr = nz_.data();
-
-  std::size_t nx_num = nx_.size();
-  std::size_t ny_num = ny_.size();
-  std::size_t nz_num = nz_.size();
-
-  const double *area_ptr = area_.data();
-  std::size_t area_num = area_.size();
-
-  const double *source_term_ptr = source_term_.data();
-  std::size_t source_term_num = source_term_.size();
-
-  const double *tq_ptr = target_charge_.data();
-  const double *tq_dx_ptr = target_charge_dx_.data();
-  const double *tq_dy_ptr = target_charge_dy_.data();
-  const double *tq_dz_ptr = target_charge_dz_.data();
-
-  std::size_t tq_num = target_charge_.size();
-  std::size_t tq_dx_num = target_charge_dx_.size();
-  std::size_t tq_dy_num = target_charge_dy_.size();
-  std::size_t tq_dz_num = target_charge_dz_.size();
-
-  const double *sq_ptr = source_charge_.data();
-  const double *sq_dx_ptr = source_charge_dx_.data();
-  const double *sq_dy_ptr = source_charge_dy_.data();
-  const double *sq_dz_ptr = source_charge_dz_.data();
-
-  std::size_t sq_num = source_charge_.size();
-  std::size_t sq_dx_num = source_charge_dx_.size();
-  std::size_t sq_dy_num = source_charge_dy_.size();
-  std::size_t sq_dz_num = source_charge_dz_.size();
-
-#pragma acc exit data delete (                                                 \
-    x_ptr[0 : x_num], y_ptr[0 : y_num], z_ptr[0 : z_num], nx_ptr[0 : nx_num],  \
-    ny_ptr[0 : ny_num], nz_ptr[0 : nz_num], area_ptr[0 : area_num])
-#pragma acc exit data delete (                                                 \
-    source_term_ptr[0 : source_term_num], tq_ptr[0 : tq_num],                  \
-    tq_dx_ptr[0 : tq_dx_num], tq_dy_ptr[0 : tq_dy_num],                        \
-    tq_dz_ptr[0 : tq_dz_num], sq_ptr[0 : sq_num], sq_dx_ptr[0 : sq_dx_num],    \
-    sq_dy_ptr[0 : sq_dy_num], sq_dz_ptr[0 : sq_dz_num])
 #endif
 
   timers_.delete_from_device.stop();

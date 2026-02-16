@@ -248,9 +248,6 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
 #endif
     const int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
 
-#ifdef OPENACC_ENABLED
-    #pragma acc enter data copyin(potential_old[0:potential_num], \
-                                  potential_new[0:potential_num]) if (!device_ptrs)
 #ifdef USE_CUDA_CC
     {
         const bool present_ok = validate_device_buffers_matrix_vector_(nullptr, potential_new);
@@ -270,13 +267,6 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
                 potential_new[i] = 0.;
         }
     }
-#else
-    for (std::size_t i = 0; i < potential_num; ++i)
-        potential_temp[i] = potential_new[i];
-
-    for (std::size_t i = 0; i < potential_num; ++i)
-        potential_new[i] = 0.;
-#endif
 #else
     std::memcpy(potential_temp, potential_new, potential_num * sizeof(double));
     std::memset(potential_new, 0, potential_num * sizeof(double));
@@ -308,7 +298,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     }
 
     bool use_fused_pppc = false;
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env_local = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all_local =
@@ -334,7 +324,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     
     BoundaryElement::downward_pass(potential_new);
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -359,8 +349,6 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
                         + alpha * (potential_coeff_2 * potential_old[i] - potential_new[i]);
         }
     }
-    #pragma acc exit data copyout(potential_new[0:potential_num]) if (!device_ptrs)
-    #pragma acc exit data delete(potential_old[0:potential_num]) if (!device_ptrs)
 #else
     for (std::size_t i = 0; i < potential_.size() / 2; ++i)
         potential_new[i] = beta * potential_temp[i]
@@ -3908,85 +3896,6 @@ void BoundaryElement::copyin_clusters_to_device() const
     return;
 #endif
 
-#ifdef OPENACC_ENABLED
-    const double* q_ptr    = interp_charge_.data();
-    const double* q_dx_ptr = interp_charge_dx_.data();
-    const double* q_dy_ptr = interp_charge_dy_.data();
-    const double* q_dz_ptr = interp_charge_dz_.data();
-    
-    std::size_t q_num    = interp_charge_.size();
-    std::size_t q_dx_num = interp_charge_dx_.size();
-    std::size_t q_dy_num = interp_charge_dy_.size();
-    std::size_t q_dz_num = interp_charge_dz_.size();
-    
-    const double* p_ptr    = interp_potential_.data();
-    const double* p_dx_ptr = interp_potential_dx_.data();
-    const double* p_dy_ptr = interp_potential_dy_.data();
-    const double* p_dz_ptr = interp_potential_dz_.data();
-    
-    std::size_t p_num    = interp_potential_.size();
-    std::size_t p_dx_num = interp_potential_dx_.size();
-    std::size_t p_dy_num = interp_potential_dy_.size();
-    std::size_t p_dz_num = interp_potential_dz_.size();
-
-    const double* weights_ptr = weights_.data();
-    std::size_t weights_num = weights_.size();
-
-    const double* potential_temp_ptr = potential_temp_.data();
-    std::size_t potential_temp_num = potential_temp_.size();
-
-    const int* exact_idx_x_ptr = exact_idx_x_.data();
-    const int* exact_idx_y_ptr = exact_idx_y_.data();
-    const int* exact_idx_z_ptr = exact_idx_z_.data();
-    const double* denominator_ptr = denominator_.data();
-
-    const std::uint32_t* node_begin_ptr = node_particles_begin_u32_.data();
-    const std::uint32_t* node_end_ptr = node_particles_end_u32_.data();
-    std::size_t node_count = node_particles_begin_u32_.size();
-
-    const std::uint32_t* element_node_idx_ptr = element_node_idx_u32_.data();
-    std::size_t element_node_count = element_node_idx_u32_.size();
-
-    const std::size_t* level_offsets_ptr = level_offsets_.data();
-    const std::size_t* level_nodes_ptr = level_nodes_.data();
-    std::size_t level_offsets_num = level_offsets_.size();
-    std::size_t level_nodes_num = level_nodes_.size();
-
-    const std::uint32_t* pp_offsets_ptr = pp_offsets_u32_.data();
-    const std::uint32_t* pc_offsets_ptr = pc_offsets_u32_.data();
-    const std::uint32_t* cp_offsets_ptr = cp_offsets_u32_.data();
-    const std::uint32_t* cc_offsets_ptr = cc_offsets_u32_.data();
-    const std::uint32_t* pp_sources_ptr = pp_sources_u32_.data();
-    const std::uint32_t* pc_sources_ptr = pc_sources_u32_.data();
-    const std::uint32_t* cp_sources_ptr = cp_sources_u32_.data();
-    const std::uint32_t* cc_sources_ptr = cc_sources_u32_.data();
-
-    std::size_t pp_offsets_num = pp_offsets_u32_.size();
-    std::size_t pc_offsets_num = pc_offsets_u32_.size();
-    std::size_t cp_offsets_num = cp_offsets_u32_.size();
-    std::size_t cc_offsets_num = cc_offsets_u32_.size();
-    std::size_t pp_sources_num = pp_sources_u32_.size();
-    std::size_t pc_sources_num = pc_sources_u32_.size();
-    std::size_t cp_sources_num = cp_sources_u32_.size();
-    std::size_t cc_sources_num = cc_sources_u32_.size();
-    
-    #pragma acc enter data create( \
-                q_ptr[0:q_num], q_dx_ptr[0:q_dx_num], q_dy_ptr[0:q_dy_num], q_dz_ptr[0:q_dz_num], \
-                p_ptr[0:p_num], p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num], \
-                potential_temp_ptr[0:potential_temp_num])
-    #pragma acc enter data copyin(weights_ptr[0:weights_num])
-    #pragma acc enter data create(exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
-                                  exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
-    #pragma acc enter data copyin(node_begin_ptr[0:node_count], node_end_ptr[0:node_count])
-    #pragma acc enter data copyin(element_node_idx_ptr[0:element_node_count])
-    #pragma acc enter data copyin(level_offsets_ptr[0:level_offsets_num], \
-                                  level_nodes_ptr[0:level_nodes_num])
-    #pragma acc enter data copyin( \
-                pp_offsets_ptr[0:pp_offsets_num], pc_offsets_ptr[0:pc_offsets_num], \
-                cp_offsets_ptr[0:cp_offsets_num], cc_offsets_ptr[0:cc_offsets_num], \
-                pp_sources_ptr[0:pp_sources_num], pc_sources_ptr[0:pc_sources_num], \
-                cp_sources_ptr[0:cp_sources_num], cc_sources_ptr[0:cc_sources_num])
-#endif
 #ifdef USE_CUDA_CC
     cache_device_buffers_();
 #endif
@@ -4039,86 +3948,6 @@ void BoundaryElement::delete_clusters_from_device() const
     return;
 #endif
 
-#ifdef OPENACC_ENABLED
-    const double* q_ptr    = interp_charge_.data();
-    const double* q_dx_ptr = interp_charge_dx_.data();
-    const double* q_dy_ptr = interp_charge_dy_.data();
-    const double* q_dz_ptr = interp_charge_dz_.data();
-    
-    std::size_t q_num    = interp_charge_.size();
-    std::size_t q_dx_num = interp_charge_dx_.size();
-    std::size_t q_dy_num = interp_charge_dy_.size();
-    std::size_t q_dz_num = interp_charge_dz_.size();
-    
-    const double* p_ptr    = interp_potential_.data();
-    const double* p_dx_ptr = interp_potential_dx_.data();
-    const double* p_dy_ptr = interp_potential_dy_.data();
-    const double* p_dz_ptr = interp_potential_dz_.data();
-    
-    std::size_t p_num    = interp_potential_.size();
-    std::size_t p_dx_num = interp_potential_dx_.size();
-    std::size_t p_dy_num = interp_potential_dy_.size();
-    std::size_t p_dz_num = interp_potential_dz_.size();
-
-    const double* weights_ptr = weights_.data();
-    std::size_t weights_num = weights_.size();
-
-    const double* potential_temp_ptr = potential_temp_.data();
-    std::size_t potential_temp_num = potential_temp_.size();
-
-    const int* exact_idx_x_ptr = exact_idx_x_.data();
-    const int* exact_idx_y_ptr = exact_idx_y_.data();
-    const int* exact_idx_z_ptr = exact_idx_z_.data();
-    const double* denominator_ptr = denominator_.data();
-    std::size_t max_particles = exact_idx_x_.size();
-
-    const std::uint32_t* node_begin_ptr = node_particles_begin_u32_.data();
-    const std::uint32_t* node_end_ptr = node_particles_end_u32_.data();
-    std::size_t node_count = node_particles_begin_u32_.size();
-
-    const std::uint32_t* element_node_idx_ptr = element_node_idx_u32_.data();
-    std::size_t element_node_count = element_node_idx_u32_.size();
-
-    const std::size_t* level_offsets_ptr = level_offsets_.data();
-    const std::size_t* level_nodes_ptr = level_nodes_.data();
-    std::size_t level_offsets_num = level_offsets_.size();
-    std::size_t level_nodes_num = level_nodes_.size();
-
-    const std::uint32_t* pp_offsets_ptr = pp_offsets_u32_.data();
-    const std::uint32_t* pc_offsets_ptr = pc_offsets_u32_.data();
-    const std::uint32_t* cp_offsets_ptr = cp_offsets_u32_.data();
-    const std::uint32_t* cc_offsets_ptr = cc_offsets_u32_.data();
-    const std::uint32_t* pp_sources_ptr = pp_sources_u32_.data();
-    const std::uint32_t* pc_sources_ptr = pc_sources_u32_.data();
-    const std::uint32_t* cp_sources_ptr = cp_sources_u32_.data();
-    const std::uint32_t* cc_sources_ptr = cc_sources_u32_.data();
-
-    std::size_t pp_offsets_num = pp_offsets_u32_.size();
-    std::size_t pc_offsets_num = pc_offsets_u32_.size();
-    std::size_t cp_offsets_num = cp_offsets_u32_.size();
-    std::size_t cc_offsets_num = cc_offsets_u32_.size();
-    std::size_t pp_sources_num = pp_sources_u32_.size();
-    std::size_t pc_sources_num = pc_sources_u32_.size();
-    std::size_t cp_sources_num = cp_sources_u32_.size();
-    std::size_t cc_sources_num = cc_sources_u32_.size();
-    
-    #pragma acc exit data delete( \
-                q_ptr[0:q_num], q_dx_ptr[0:q_dx_num], q_dy_ptr[0:q_dy_num], q_dz_ptr[0:q_dz_num], \
-                p_ptr[0:p_num], p_dx_ptr[0:p_dx_num], p_dy_ptr[0:p_dy_num], p_dz_ptr[0:p_dz_num], \
-                potential_temp_ptr[0:potential_temp_num])
-    #pragma acc exit data delete(weights_ptr[0:weights_num])
-    #pragma acc exit data delete(exact_idx_x_ptr[0:max_particles], exact_idx_y_ptr[0:max_particles], \
-                                 exact_idx_z_ptr[0:max_particles], denominator_ptr[0:max_particles])
-    #pragma acc exit data delete(node_begin_ptr[0:node_count], node_end_ptr[0:node_count])
-    #pragma acc exit data delete(element_node_idx_ptr[0:element_node_count])
-    #pragma acc exit data delete(level_offsets_ptr[0:level_offsets_num], \
-                                 level_nodes_ptr[0:level_nodes_num])
-    #pragma acc exit data delete( \
-                pp_offsets_ptr[0:pp_offsets_num], pc_offsets_ptr[0:pc_offsets_num], \
-                cp_offsets_ptr[0:cp_offsets_num], cc_offsets_ptr[0:cc_offsets_num], \
-                pp_sources_ptr[0:pp_sources_num], pc_sources_ptr[0:pc_sources_num], \
-                cp_sources_ptr[0:cp_sources_num], cc_sources_ptr[0:cc_sources_num])
-#endif
 #ifdef USE_CUDA_CC
     reset_device_buffers_();
 #endif
