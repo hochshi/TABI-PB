@@ -7,6 +7,10 @@
 #include <cstring>
 #include <iostream>
 
+#ifdef USE_CUDA_CC
+#include "cuda_helpers.h"
+#endif
+
 #include "tree.h"
 #include "interaction_list.h"
 
@@ -157,13 +161,13 @@ public:
                       << " cp=" << cp_calls
                       << " cc=" << cc_calls << "\n";
         }
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
         if (debug_progress) {
-            std::cerr << "[DEBUG] TreeCompute::run: acc wait begin\n";
+            std::cerr << "[DEBUG] TreeCompute::run: cuda sync begin\n";
         }
-        #pragma acc wait
+        CUDA_SYNC_AND_CHECK();
         if (debug_progress) {
-            std::cerr << "[DEBUG] TreeCompute::run: acc wait end\n";
+            std::cerr << "[DEBUG] TreeCompute::run: cuda sync end\n";
         }
 #endif
         if (debug_progress) {

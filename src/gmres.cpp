@@ -6,13 +6,8 @@
 #include "boundary_element.h"
 
 #ifdef USE_CUDA_CC
-#include <openacc.h>
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include "gmres_cuda.h"
-extern "C" {
-    CUcontext acc_get_cuda_context(void) __attribute__((weak));
-}
 #endif
 
 /*  -- Iterative template routine --
@@ -165,23 +160,7 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
     use_cuda_gmres = require_gmres || (gmres_env && std::strcmp(gmres_env, "0") != 0);
     (void)std::getenv("TABIPB_CUDA_GMRES_DEBUG_MAP");
     if (use_cuda_gmres) {
-        static bool cu_inited = false;
-        if (!cu_inited) {
-            cuInit(0);
-            cu_inited = true;
-        }
-        acc_wait(acc_async_sync);
-        cuda_stream = acc_get_cuda_stream(acc_async_sync);
-        CUcontext acc_ctx = nullptr;
-        if (acc_get_cuda_context) {
-            acc_ctx = acc_get_cuda_context();
-        }
-        if (acc_ctx == nullptr) {
-            cuCtxGetCurrent(&acc_ctx);
-        }
-        if (acc_ctx != nullptr) {
-            cuCtxSetCurrent(acc_ctx);
-        }
+        cuda_stream = nullptr;
         use_cuda_precond = !params_.precondition_;
         if (require_gmres && params_.precondition_) {
             std::cerr << "[CUDA_GMRES] CUDA GMRES requires diagonal precondition; block precondition is CPU-only. "
@@ -419,8 +398,8 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
 
     /*        Construct the first column of V. */
 
-#ifdef USE_CUDA_CC
         double rnorm = 0.0;
+#ifdef USE_CUDA_CC
         if (use_cuda_gmres) {
             gmres_cuda_copy(work_dev + 3 * ldw, work_dev, static_cast<std::size_t>(n), cuda_stream);
             if (scalars_dev) {

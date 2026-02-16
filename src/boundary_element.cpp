@@ -9,7 +9,6 @@
 #include "constants.h"
 #include "boundary_element.h"
 #ifdef USE_CUDA_CC
-#include <openacc.h>
 #include <cuda_runtime.h>
 #include "cuda_helpers.h"
 #include "cc_cuda.h"
@@ -256,8 +255,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     {
         const bool present_ok = validate_device_buffers_matrix_vector_(nullptr, potential_new);
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             be_potential_copy_zero_cuda(potential_new, device_buffers_.potential_temp,
                                         potential_new, potential_num, stream);
         } else if (require_all) {
@@ -330,8 +328,8 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
     }
     BoundaryElement::cluster_cluster_interact_all(potential_new);
 
-#ifdef OPENACC_ENABLED
-    #pragma acc wait
+#ifdef USE_CUDA_CC
+    CUDA_SYNC_AND_CHECK();
 #endif
     
     BoundaryElement::downward_pass(potential_new);
@@ -342,8 +340,7 @@ void BoundaryElement::matrix_vector(double alpha, const double* __restrict poten
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
         const bool present_ok = validate_device_buffers_matrix_vector_(potential_old, potential_new);
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             be_potential_combine_cuda(potential_old, device_buffers_.potential_temp, potential_new,
                                       potential_num, alpha, beta,
                                       potential_coeff_1, potential_coeff_2,
@@ -1112,8 +1109,7 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
         }
 
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             pp_interact_cuda(eps,
                              kappa,
                              kappa2,
@@ -1337,8 +1333,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
         }
 
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             pppc_interact_cuda(num_interp_pts_per_node,
                                num_charges_per_node,
                                eps,
@@ -1393,8 +1388,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
         }
 
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             pc_interact_cuda(num_interp_pts_per_node,
                              num_charges_per_node,
                              eps,
@@ -2105,8 +2099,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         }
 
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             timers_.cluster_cluster_interact.stop();
             timers_.cluster_particle_interact.start();
             cp_interact_cuda(n, n2, n3, num_interp_pts_per_node, num_charges_per_node,
@@ -2820,8 +2813,7 @@ void BoundaryElement::upward_pass()
         }
 
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             if (use_split) {
                 for (std::size_t level = 0; level < level_count; ++level) {
                     std::size_t level_begin = level_offsets_ptr[level];
@@ -3128,8 +3120,7 @@ void BoundaryElement::downward_pass(double* __restrict potential)
         const bool present_ok = validate_device_buffers_downward_(potential);
 
         if (present_ok) {
-            acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             for (std::size_t level = 0; level < level_count; ++level) {
                 std::size_t level_begin = level_offsets_ptr[level];
                 std::size_t level_end   = level_offsets_ptr[level + 1];
@@ -3403,8 +3394,7 @@ void BoundaryElement::clear_cluster_charges()
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
     const bool present_ok = validate_device_buffers_clear_cluster_charges_();
     if (present_ok) {
-        acc_wait(acc_async_sync);
-        void* stream = acc_get_cuda_stream(acc_async_sync);
+        void* stream = nullptr;
         be_clear_cluster_charges_cuda(device_buffers_.clusters_q, device_buffers_.clusters_q_dx,
                                       device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
                                       num_charges, stream);
@@ -3451,8 +3441,7 @@ void BoundaryElement::clear_cluster_potentials()
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
     const bool present_ok = validate_device_buffers_clear_cluster_potentials_();
     if (present_ok) {
-        acc_wait(acc_async_sync);
-        void* stream = acc_get_cuda_stream(acc_async_sync);
+        void* stream = nullptr;
         be_clear_cluster_potentials_cuda(device_buffers_.clusters_p, device_buffers_.clusters_p_dx,
                                          device_buffers_.clusters_p_dy, device_buffers_.clusters_p_dz,
                                          num_potentials, stream);
