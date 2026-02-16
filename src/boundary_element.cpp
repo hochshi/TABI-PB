@@ -4031,9 +4031,15 @@ void BoundaryElement::copyin_clusters_to_device() const
                           << "Did you call interp_pts.copyin_to_device()?\n";
                 std::exit(1);
             }
-            ptrs.clusters_x = interp_pts_.device_buffers_.interp_x_dev;
-            ptrs.clusters_y = interp_pts_.device_buffers_.interp_y_dev;
-            ptrs.clusters_z = interp_pts_.device_buffers_.interp_z_dev;
+            const auto interp_view = interp_pts_.device_view();
+            if (interp_view.num_interp_pts != num_interp_pts ||
+                !interp_view.interp_x || !interp_view.interp_y || !interp_view.interp_z) {
+                std::cerr << "[CUDA_BE] interp_pts DeviceView is not valid for cluster xyz buffers.\n";
+                std::exit(1);
+            }
+            ptrs.clusters_x = interp_view.interp_x;
+            ptrs.clusters_y = interp_view.interp_y;
+            ptrs.clusters_z = interp_view.interp_z;
             ptrs.owns_clusters_xyz = false;
         }
 
@@ -4186,21 +4192,33 @@ void BoundaryElement::copyin_clusters_to_device() const
             }
         }
 
-        ptrs.elements_x = elements_.device_buffers_.x;
-        ptrs.elements_y = elements_.device_buffers_.y;
-        ptrs.elements_z = elements_.device_buffers_.z;
-        ptrs.elements_nx = elements_.device_buffers_.nx;
-        ptrs.elements_ny = elements_.device_buffers_.ny;
-        ptrs.elements_nz = elements_.device_buffers_.nz;
-        ptrs.elements_area = elements_.device_buffers_.area;
-        ptrs.targets_q = elements_.device_buffers_.target_q;
-        ptrs.targets_q_dx = elements_.device_buffers_.target_q_dx;
-        ptrs.targets_q_dy = elements_.device_buffers_.target_q_dy;
-        ptrs.targets_q_dz = elements_.device_buffers_.target_q_dz;
-        ptrs.sources_q = elements_.device_buffers_.source_q;
-        ptrs.sources_q_dx = elements_.device_buffers_.source_q_dx;
-        ptrs.sources_q_dy = elements_.device_buffers_.source_q_dy;
-        ptrs.sources_q_dz = elements_.device_buffers_.source_q_dz;
+        const auto elements_view = elements_.device_view();
+        if (elements_view.num == 0 ||
+            !elements_view.x || !elements_view.y || !elements_view.z ||
+            !elements_view.nx || !elements_view.ny || !elements_view.nz ||
+            !elements_view.area ||
+            !elements_view.target_q || !elements_view.target_q_dx ||
+            !elements_view.target_q_dy || !elements_view.target_q_dz ||
+            !elements_view.source_q || !elements_view.source_q_dx ||
+            !elements_view.source_q_dy || !elements_view.source_q_dz) {
+            std::cerr << "[CUDA_BE] Elements DeviceView is not valid for matrix-vector inputs.\n";
+            std::exit(1);
+        }
+        ptrs.elements_x = elements_view.x;
+        ptrs.elements_y = elements_view.y;
+        ptrs.elements_z = elements_view.z;
+        ptrs.elements_nx = elements_view.nx;
+        ptrs.elements_ny = elements_view.ny;
+        ptrs.elements_nz = elements_view.nz;
+        ptrs.elements_area = elements_view.area;
+        ptrs.targets_q = elements_view.target_q;
+        ptrs.targets_q_dx = elements_view.target_q_dx;
+        ptrs.targets_q_dy = elements_view.target_q_dy;
+        ptrs.targets_q_dz = elements_view.target_q_dz;
+        ptrs.sources_q = elements_view.source_q;
+        ptrs.sources_q_dx = elements_view.source_q_dx;
+        ptrs.sources_q_dy = elements_view.source_q_dy;
+        ptrs.sources_q_dz = elements_view.source_q_dz;
 
         ptrs.ready = true;
         device_buffers_ = ptrs;
