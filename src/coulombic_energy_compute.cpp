@@ -11,11 +11,7 @@
 #ifdef OPENACC_ENABLED
 #include <openacc.h>
 #endif
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
-#include <cuda.h>
-extern "C" {
-    CUcontext acc_get_cuda_context(void) __attribute__((weak));
-}
+#ifdef USE_CUDA_CC
 #include "coulombic_energy_cuda.h"
 #endif
 #ifdef USE_CUDA_CC
@@ -124,29 +120,19 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_particle_particle_();
         if (present_ok) {
+            const auto mol_dev = molecule_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
-            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, coul_eng_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                coulombic_pp_cuda(
-                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                    target_node_begin,
-                    target_node_end,
-                    source_node_begin,
-                    source_node_end,
-                    eps_solute_,
-                    coul_eng_ptr,
-                    stream);
-            }
+            coulombic_pp_cuda(
+                mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+                target_node_begin,
+                target_node_end,
+                source_node_begin,
+                source_node_end,
+                eps_solute_,
+                self_dev.coul_eng,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -222,34 +208,23 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_particle_cluster_();
         if (present_ok) {
+            const auto mol_dev = molecule_.device_view();
+            const auto mol_interp_dev = mol_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
-            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                                             mol_clusters_q_ptr, coul_eng_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                coulombic_pc_cuda(
-                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
-                    mol_clusters_q_ptr,
-                    source_node_idx,
-                    num_mol_interp_pts_per_node_,
-                    num_mol_interp_charges_per_node_,
-                    target_node_begin,
-                    target_node_end,
-                    eps_solute_,
-                    coul_eng_ptr,
-                    stream);
-            }
+            coulombic_pc_cuda(
+                mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+                mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
+                self_dev.q,
+                source_node_idx,
+                num_mol_interp_pts_per_node_,
+                num_mol_interp_charges_per_node_,
+                target_node_begin,
+                target_node_end,
+                eps_solute_,
+                self_dev.coul_eng,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -331,32 +306,22 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_cluster_particle_();
         if (present_ok) {
+            const auto mol_dev = molecule_.device_view();
+            const auto mol_interp_dev = mol_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
-            #pragma acc host_data use_device(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                                             mol_clusters_p_ptr, mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                coulombic_cp_cuda(
-                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
-                    mol_clusters_p_ptr,
-                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                    target_node_idx,
-                    num_mol_interp_pts_per_node_,
-                    num_mol_interp_potentials_per_node_,
-                    source_node_begin,
-                    source_node_end,
-                    eps_solute_,
-                    stream);
-            }
+            coulombic_cp_cuda(
+                mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
+                self_dev.p,
+                mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+                target_node_idx,
+                num_mol_interp_pts_per_node_,
+                num_mol_interp_potentials_per_node_,
+                source_node_begin,
+                source_node_end,
+                eps_solute_,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -434,31 +399,20 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_cluster_cluster_();
         if (present_ok) {
+            const auto mol_interp_dev = mol_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
-            #pragma acc host_data use_device(mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                                             mol_clusters_q_ptr, mol_clusters_p_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                coulombic_cc_cuda(
-                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
-                    mol_clusters_q_ptr, mol_clusters_p_ptr,
-                    target_node_idx,
-                    source_node_idx,
-                    num_mol_interp_pts_per_node_,
-                    num_mol_interp_charges_per_node_,
-                    num_mol_interp_potentials_per_node_,
-                    eps_solute_,
-                    stream);
-            }
+            coulombic_cc_cuda(
+                mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
+                self_dev.q, self_dev.p,
+                target_node_idx,
+                source_node_idx,
+                num_mol_interp_pts_per_node_,
+                num_mol_interp_charges_per_node_,
+                num_mol_interp_potentials_per_node_,
+                eps_solute_,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -541,44 +495,31 @@ void CoulombicEnergyCompute::upward_pass()
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_upward_pass_();
         if (present_ok) {
+            const auto mol_dev = molecule_.device_view();
+            const auto mol_interp_dev = mol_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kCoulombicAsync);
-            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                                             mol_clusters_q_ptr, weights_ptr, \
-                                             exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr, \
-                                             denominator_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
+            for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
+                auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+                std::size_t particle_start = particle_idxs[0];
+                std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+                if (num_particles == 0) {
+                    continue;
                 }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
-                    auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
-                    std::size_t particle_start = particle_idxs[0];
-                    std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
-                    if (num_particles == 0) {
-                        continue;
-                    }
-                    coulombic_up_cuda(
-                        mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                        mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
-                        mol_clusters_q_ptr,
-                        weights_ptr,
-                        exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr,
-                        denominator_ptr,
-                        node_idx,
-                        num_mol_interp_pts_per_node_,
-                        num_mol_interp_charges_per_node_,
-                        particle_start,
-                        num_particles,
-                        stream);
-                }
+                coulombic_up_cuda(
+                    mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+                    mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
+                    self_dev.q,
+                    self_dev.weights,
+                    self_dev.exact_idx_x, self_dev.exact_idx_y, self_dev.exact_idx_z,
+                    self_dev.denominator,
+                    node_idx,
+                    num_mol_interp_pts_per_node_,
+                    num_mol_interp_charges_per_node_,
+                    particle_start,
+                    num_particles,
+                    stream);
+                CUDA_CHECK_LAST_KERNEL();
             }
             #pragma acc wait(kCoulombicAsync)
             return;
@@ -792,10 +733,6 @@ void CoulombicEnergyCompute::copyin_clusters_to_device() const
 
     const double* weights_ptr = mol_weights_.data();
     std::size_t weights_num   = mol_weights_.size();
-    int* exact_idx_x_ptr      = exact_idx_x_.data();
-    int* exact_idx_y_ptr      = exact_idx_y_.data();
-    int* exact_idx_z_ptr      = exact_idx_z_.data();
-    double* denominator_ptr   = denominator_.data();
     std::size_t scratch_num   = max_mol_particles_per_node_;
 
     auto& buf = device_buffers_;
@@ -803,18 +740,6 @@ void CoulombicEnergyCompute::copyin_clusters_to_device() const
         (buf.q_num != q_num || buf.p_num != p_num ||
          buf.coul_eng_num != coul_eng_num || buf.weights_num != weights_num ||
          buf.scratch_num != scratch_num)) {
-#ifdef OPENACC_ENABLED
-        CUDA_ACC_UNMAP_IF_PRESENT(q_ptr, q_num * sizeof(double));
-        CUDA_ACC_UNMAP_IF_PRESENT(p_ptr, p_num * sizeof(double));
-        CUDA_ACC_UNMAP_IF_PRESENT(coul_eng_ptr, coul_eng_num * sizeof(double));
-        CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_num * sizeof(double));
-        if (scratch_num > 0) {
-            CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_x_ptr, scratch_num * sizeof(int));
-            CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_y_ptr, scratch_num * sizeof(int));
-            CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_z_ptr, scratch_num * sizeof(int));
-            CUDA_ACC_UNMAP_IF_PRESENT(denominator_ptr, scratch_num * sizeof(double));
-        }
-#endif
         CUDA_FREE_AND_NULL(buf.q_dev);
         CUDA_FREE_AND_NULL(buf.p_dev);
         CUDA_FREE_AND_NULL(buf.coul_eng_dev);
@@ -875,30 +800,6 @@ void CoulombicEnergyCompute::copyin_clusters_to_device() const
         CUDA_MEMCPY_ASYNC(buf.weights_dev, weights_ptr, weights_num * sizeof(double),
                           cudaMemcpyHostToDevice, stream);
     }
-
-#ifdef OPENACC_ENABLED
-    CUDA_ACC_UNMAP_IF_PRESENT(q_ptr, q_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(p_ptr, p_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(coul_eng_ptr, coul_eng_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_num * sizeof(double));
-    if (scratch_num > 0) {
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_x_ptr, scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_y_ptr, scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_z_ptr, scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(denominator_ptr, scratch_num * sizeof(double));
-    }
-
-    CUDA_ACC_MAP_CONST(q_ptr, buf.q_dev, q_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(p_ptr, buf.p_dev, p_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(coul_eng_ptr, buf.coul_eng_dev, coul_eng_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(weights_ptr, buf.weights_dev, weights_num * sizeof(double));
-    if (scratch_num > 0) {
-        CUDA_ACC_MAP_CONST(exact_idx_x_ptr, buf.exact_idx_x_dev, scratch_num * sizeof(int));
-        CUDA_ACC_MAP_CONST(exact_idx_y_ptr, buf.exact_idx_y_dev, scratch_num * sizeof(int));
-        CUDA_ACC_MAP_CONST(exact_idx_z_ptr, buf.exact_idx_z_dev, scratch_num * sizeof(int));
-        CUDA_ACC_MAP_CONST(denominator_ptr, buf.denominator_dev, scratch_num * sizeof(double));
-    }
-#endif
 
     CUDA_SYNC_AND_CHECK();
     device_state_ = CudaDeviceState::DeviceMapped;
@@ -961,27 +862,7 @@ void CoulombicEnergyCompute::delete_clusters_from_device() const
     const std::size_t weights_num = mol_weights_.size();
     const std::size_t scratch_num = max_mol_particles_per_node_;
 
-    const double* q_ptr = mol_interp_charge_.data();
-    const double* p_ptr = mol_interp_potential_.data();
     double* coul_eng_ptr = coul_eng_vec_.data();
-    const double* weights_ptr = mol_weights_.data();
-    int* exact_idx_x_ptr = exact_idx_x_.data();
-    int* exact_idx_y_ptr = exact_idx_y_.data();
-    int* exact_idx_z_ptr = exact_idx_z_.data();
-    double* denominator_ptr = denominator_.data();
-
-#ifdef OPENACC_ENABLED
-    CUDA_ACC_UNMAP_IF_PRESENT(q_ptr, q_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(p_ptr, p_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(coul_eng_ptr, coul_eng_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(weights_ptr, weights_num * sizeof(double));
-    if (scratch_num > 0) {
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_x_ptr, scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_y_ptr, scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_z_ptr, scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(denominator_ptr, scratch_num * sizeof(double));
-    }
-#endif
 
     // Pull the scalar/vector result back before releasing device ownership.
     if (buf.coul_eng_dev && coul_eng_num > 0) {

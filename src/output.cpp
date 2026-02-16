@@ -18,15 +18,6 @@
 #ifdef USE_CUDA_CC
 #include <cuda_runtime.h>
 #include "cuda_helpers.h"
-#endif
-
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
-
-#ifdef USE_CUDA_CC
-#include <cuda_runtime.h>
-#include "cuda_helpers.h"
 #include "output_cuda.h"
 #endif
 
@@ -44,7 +35,13 @@ Output::Output(class Molecule& mol, class Elements& elem, const struct Params& p
 
 #ifdef USE_CUDA_CC
 bool Output::validate_device_buffers_compute_coulombic_energy_() const {
-    return molecule_.cuda_device_ready();
+    const auto mol_dev = molecule_.device_view();
+    return molecule_.cuda_device_ready() &&
+           mol_dev.particles_x &&
+           mol_dev.particles_y &&
+           mol_dev.particles_z &&
+           mol_dev.charge &&
+           mol_dev.num_particles == molecule_.num();
 }
 
 bool Output::validate_device_buffers_compute_solvation_energy_() const {
@@ -74,14 +71,18 @@ void Output::compute_coulombic_energy()
     const double* __restrict mol_z_ptr = molecule_.z_ptr();
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
         const bool present_ok = validate_device_buffers_compute_coulombic_energy_();
         if (present_ok) {
+            const auto mol_dev = molecule_.device_view();
+            cudaStream_t stream = nullptr;
+#ifdef OPENACC_ENABLED
             acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
+#endif
             double* energy_dev = nullptr;
             auto check = [](cudaError_t err, const char* what) {
                 if (err != cudaSuccess) {
@@ -91,19 +92,16 @@ void Output::compute_coulombic_energy()
                 }
             };
             check(cudaMalloc(&energy_dev, sizeof(double)), "cudaMalloc coulombic_energy");
-            check(cudaMemsetAsync(energy_dev, 0, sizeof(double),
-                                  reinterpret_cast<cudaStream_t>(stream)),
+            check(cudaMemsetAsync(energy_dev, 0, sizeof(double), stream),
                   "cudaMemsetAsync coulombic_energy");
-            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr)
-            {
-                output_coulombic_cuda(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                                      num_atoms, epsp, energy_dev, stream);
-            }
+            output_coulombic_cuda(mol_dev.particles_x, mol_dev.particles_y,
+                                  mol_dev.particles_z, mol_dev.charge,
+                                  num_atoms, epsp, energy_dev, stream);
+            CUDA_CHECK_LAST_KERNEL();
             check(cudaMemcpyAsync(&coulombic_energy, energy_dev, sizeof(double),
-                                  cudaMemcpyDeviceToHost,
-                                  reinterpret_cast<cudaStream_t>(stream)),
+                                  cudaMemcpyDeviceToHost, stream),
                   "cudaMemcpyAsync coulombic_energy");
-            check(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream)),
+            check(cudaStreamSynchronize(stream),
                   "cudaStreamSynchronize coulombic_energy");
             cudaFree(energy_dev);
             coulombic_energy_ = coulombic_energy;
@@ -205,11 +203,6 @@ void Output::compute_solvation_energy()
     CUDA_MEMCPY_ASYNC(buf.potential_dev, potential_ptr,
                       potential_num * sizeof(double),
                       cudaMemcpyHostToDevice, stream);
-#ifdef OPENACC_ENABLED
-    CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(potential_ptr, buf.potential_dev,
-                       potential_num * sizeof(double));
-#endif
     CUDA_SYNC_AND_CHECK();
     buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
@@ -233,8 +226,11 @@ void Output::compute_solvation_energy()
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
         const bool present_ok = validate_device_buffers_compute_solvation_energy_();
         if (present_ok) {
+            const auto elem_dev = elements_.device_view();
+            const auto mol_dev = molecule_.device_view();
+            const auto out_dev = device_view();
             acc_wait(acc_async_sync);
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            cudaStream_t stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
             double* energy_dev = nullptr;
             auto check = [](cudaError_t err, const char* what) {
                 if (err != cudaSuccess) {
@@ -244,38 +240,27 @@ void Output::compute_solvation_energy()
                 }
             };
             check(cudaMalloc(&energy_dev, sizeof(double)), "cudaMalloc solvation_energy");
-            check(cudaMemsetAsync(energy_dev, 0, sizeof(double),
-                                  reinterpret_cast<cudaStream_t>(stream)),
+            check(cudaMemsetAsync(energy_dev, 0, sizeof(double), stream),
                   "cudaMemsetAsync solvation_energy");
-            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
-                                             elem_nx_ptr, elem_ny_ptr, elem_nz_ptr, \
-                                             elem_area_ptr, mol_x_ptr, mol_y_ptr, mol_z_ptr, \
-                                             mol_q_ptr, potential_ptr)
-            {
-                output_solvation_cuda(elem_x_ptr, elem_y_ptr, elem_z_ptr,
-                                      elem_nx_ptr, elem_ny_ptr, elem_nz_ptr,
-                                      elem_area_ptr,
-                                      mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                                      potential_ptr, potential_offset_,
-                                      num_elems, num_atoms,
-                                      eps, kappa,
-                                      energy_dev, stream);
-            }
+            output_solvation_cuda(elem_dev.x, elem_dev.y, elem_dev.z,
+                                  elem_dev.nx, elem_dev.ny, elem_dev.nz,
+                                  elem_dev.area,
+                                  mol_dev.particles_x, mol_dev.particles_y,
+                                  mol_dev.particles_z, mol_dev.charge,
+                                  out_dev.potential, potential_offset_,
+                                  num_elems, num_atoms,
+                                  eps, kappa,
+                                  energy_dev, stream);
+            CUDA_CHECK_LAST_KERNEL();
             check(cudaMemcpyAsync(&solvation_energy, energy_dev, sizeof(double),
-                                  cudaMemcpyDeviceToHost,
-                                  reinterpret_cast<cudaStream_t>(stream)),
+                                  cudaMemcpyDeviceToHost, stream),
                   "cudaMemcpyAsync solvation_energy");
-            check(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream)),
+            check(cudaStreamSynchronize(stream),
                   "cudaStreamSynchronize solvation_energy");
             cudaFree(energy_dev);
             solvation_energy_ = solvation_energy;
             timers_.compute_solvation_energy.stop();
 #ifdef USE_CUDA_CC
-#ifdef OPENACC_ENABLED
-            if (buf.potential_dev) {
-                CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
-            }
-#endif
             CUDA_FREE_AND_NULL(buf.potential_dev);
             buf.potential_num = 0;
             buf.ready = false;
@@ -373,11 +358,6 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     CUDA_MEMCPY_ASYNC(buf.potential_dev, potential_ptr,
                       potential_num * sizeof(double),
                       cudaMemcpyHostToDevice, stream);
-#ifdef OPENACC_ENABLED
-    CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(potential_ptr, buf.potential_dev,
-                       potential_num * sizeof(double));
-#endif
     CUDA_SYNC_AND_CHECK();
     buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
@@ -419,11 +399,6 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     }
 
 #ifdef USE_CUDA_CC
-#ifdef OPENACC_ENABLED
-    if (buf.potential_dev) {
-        CUDA_ACC_UNMAP_IF_PRESENT(potential_ptr, potential_num * sizeof(double));
-    }
-#endif
     CUDA_FREE_AND_NULL(buf.potential_dev);
     buf.potential_num = 0;
     buf.ready = false;
