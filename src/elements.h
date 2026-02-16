@@ -10,6 +10,10 @@
 #include "molecule.h"
 #include "particles.h"
 
+#ifdef USE_CUDA_CC
+#include "cuda_state.h"
+#endif
+
 struct Timers_Elements;
 
 class Elements : public Particles {
@@ -110,7 +114,9 @@ public:
   void delete_from_device() const override;
 
 #ifdef USE_CUDA_CC
-  struct CudaPtrs {
+  class DeviceBuffers {
+    friend class Elements;
+  private:
     bool ready = false;
     double* x = nullptr;
     double* y = nullptr;
@@ -129,14 +135,37 @@ public:
     double* source_q_dy = nullptr;
     double* source_q_dz = nullptr;
     std::size_t num = 0;
+  public:
+    bool getReady() const { return ready; }
+    double* getX() const { return x; }
+    double* getY() const { return y; }
+    double* getZ() const { return z; }
+    double* getNX() const { return nx; }
+    double* getNY() const { return ny; }
+    double* getNZ() const { return nz; }
+    double* getArea() const { return area; }
+    double* getSourceTerm() const { return source_term; }
+    double* getTargetQ() const { return target_q; }
+    double* getTargetQDX() const { return target_q_dx; }
+    double* getTargetQDY() const { return target_q_dy; }
+    double* getTargetQDZ() const { return target_q_dz; }
+    double* getSourceQ() const { return source_q; }
+    double* getSourceQDX() const { return source_q_dx; }
+    double* getSourceQDY() const { return source_q_dy; }
+    double* getSourceQDZ() const { return source_q_dz; }
+    std::size_t getNum() const { return num; }
   };
-  const CudaPtrs& cuda_ptrs() const { return cuda_ptrs_; }
-  void reset_cuda_ptrs_() const;
+
+  // Compatibility accessor for existing callers; to be removed after full unification.
+  const DeviceBuffers& cuda_ptrs() const { return device_buffers_; }
+  const DeviceBuffers& device_buffers() const { return device_buffers_; }
+  void reset_device_buffers_() const;
 #endif
 
 private:
 #ifdef USE_CUDA_CC
-  mutable CudaPtrs cuda_ptrs_;
+  mutable DeviceBuffers device_buffers_;
+  mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
 #endif
 };
 

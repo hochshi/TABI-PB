@@ -656,8 +656,9 @@ Timer& Elements::compute_charges_timer() {
 }
 
 #ifdef USE_CUDA_CC
-void Elements::reset_cuda_ptrs_() const {
-  cuda_ptrs_ = CudaPtrs{};
+void Elements::reset_device_buffers_() const {
+  device_buffers_ = DeviceBuffers{};
+  device_state_ = CudaDeviceState::HostOnly;
 }
 #endif
 
@@ -703,7 +704,7 @@ void Elements::copyin_to_device() const {
     std::abort();
   }
 
-  auto &ptrs = cuda_ptrs_;
+  auto &ptrs = device_buffers_;
   if (ptrs.ready && ptrs.num != num) {
     CUDA_FREE_AND_NULL(ptrs.x);
     CUDA_FREE_AND_NULL(ptrs.y);
@@ -721,7 +722,7 @@ void Elements::copyin_to_device() const {
     CUDA_FREE_AND_NULL(ptrs.source_q_dx);
     CUDA_FREE_AND_NULL(ptrs.source_q_dy);
     CUDA_FREE_AND_NULL(ptrs.source_q_dz);
-    reset_cuda_ptrs_();
+    reset_device_buffers_();
   }
 
   if (!ptrs.ready && num > 0) {
@@ -814,6 +815,7 @@ void Elements::copyin_to_device() const {
 #endif
 
   CUDA_SYNC_AND_CHECK();
+  device_state_ = CudaDeviceState::DeviceMapped;
 
   if (require_all && num > 0) {
     if (!ptrs.ready || !ptrs.x || !ptrs.y || !ptrs.z || !ptrs.nx || !ptrs.ny ||
@@ -888,12 +890,14 @@ void Elements::copyin_to_device() const {
 void Elements::update_source_term_on_host() {
 #if defined(USE_CUDA_CC) && defined(OPENACC_ENABLED)
   const std::size_t source_term_num = source_term_.size();
-  if (!cuda_ptrs_.ready || source_term_num == 0 || !cuda_ptrs_.source_term) {
+  if (device_state_ != CudaDeviceState::DeviceMapped ||
+      !device_buffers_.ready || source_term_num == 0 ||
+      !device_buffers_.source_term) {
     return;
   }
   cudaStream_t stream = nullptr;
   stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-  CUDA_MEMCPY_ASYNC(source_term_.data(), cuda_ptrs_.source_term,
+  CUDA_MEMCPY_ASYNC(source_term_.data(), device_buffers_.source_term,
                     source_term_num * sizeof(double),
                     cudaMemcpyDeviceToHost, stream);
   CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -909,7 +913,7 @@ void Elements::delete_from_device() const {
   timers_.delete_from_device.start();
 
 #ifdef USE_CUDA_CC
-  if (cuda_ptrs_.ready) {
+  if (device_buffers_.ready) {
 #ifdef OPENACC_ENABLED
     const std::size_t x_num = x_.size();
     const std::size_t y_num = y_.size();
@@ -945,24 +949,25 @@ void Elements::delete_from_device() const {
     CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dy_.data(), sq_dy_num * sizeof(double));
     CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dz_.data(), sq_dz_num * sizeof(double));
 #endif
-    CUDA_FREE_AND_NULL(cuda_ptrs_.x);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.y);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.z);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.nx);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.ny);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.nz);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.area);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.source_term);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q_dx);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q_dy);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.target_q_dz);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q_dx);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q_dy);
-    CUDA_FREE_AND_NULL(cuda_ptrs_.source_q_dz);
-    reset_cuda_ptrs_();
+    CUDA_FREE_AND_NULL(device_buffers_.x);
+    CUDA_FREE_AND_NULL(device_buffers_.y);
+    CUDA_FREE_AND_NULL(device_buffers_.z);
+    CUDA_FREE_AND_NULL(device_buffers_.nx);
+    CUDA_FREE_AND_NULL(device_buffers_.ny);
+    CUDA_FREE_AND_NULL(device_buffers_.nz);
+    CUDA_FREE_AND_NULL(device_buffers_.area);
+    CUDA_FREE_AND_NULL(device_buffers_.source_term);
+    CUDA_FREE_AND_NULL(device_buffers_.target_q);
+    CUDA_FREE_AND_NULL(device_buffers_.target_q_dx);
+    CUDA_FREE_AND_NULL(device_buffers_.target_q_dy);
+    CUDA_FREE_AND_NULL(device_buffers_.target_q_dz);
+    CUDA_FREE_AND_NULL(device_buffers_.source_q);
+    CUDA_FREE_AND_NULL(device_buffers_.source_q_dx);
+    CUDA_FREE_AND_NULL(device_buffers_.source_q_dy);
+    CUDA_FREE_AND_NULL(device_buffers_.source_q_dz);
+    reset_device_buffers_();
   }
+  device_state_ = CudaDeviceState::HostOnly;
 #elif defined(OPENACC_ENABLED)
   const double *x_ptr = x_.data();
   const double *y_ptr = y_.data();

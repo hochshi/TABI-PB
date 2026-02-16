@@ -80,6 +80,7 @@ private:
         std::size_t mol_weights_num = 0;
         std::size_t elem_weights_num = 0;
         std::size_t scratch_num = 0;
+        bool ready = false;
     };
 
     mutable DeviceBuffers device_buffers_;

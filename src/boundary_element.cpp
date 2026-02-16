@@ -4030,7 +4030,7 @@ void BoundaryElement::copyin_clusters_to_device() const
         }
 
         const auto& elem_ptrs = elements_.cuda_ptrs();
-        if (!elem_ptrs.ready) {
+        if (!elem_ptrs.getReady()) {
             std::cerr << "[CUDA_BE] require_all set but Elements CUDA pointers not ready. "
                       << "Did you call elements.copyin_to_device()?\n";
             std::exit(1);
@@ -4227,21 +4227,21 @@ void BoundaryElement::copyin_clusters_to_device() const
             }
         }
 
-        ptrs.elements_x = elem_ptrs.x;
-        ptrs.elements_y = elem_ptrs.y;
-        ptrs.elements_z = elem_ptrs.z;
-        ptrs.elements_nx = elem_ptrs.nx;
-        ptrs.elements_ny = elem_ptrs.ny;
-        ptrs.elements_nz = elem_ptrs.nz;
-        ptrs.elements_area = elem_ptrs.area;
-        ptrs.targets_q = elem_ptrs.target_q;
-        ptrs.targets_q_dx = elem_ptrs.target_q_dx;
-        ptrs.targets_q_dy = elem_ptrs.target_q_dy;
-        ptrs.targets_q_dz = elem_ptrs.target_q_dz;
-        ptrs.sources_q = elem_ptrs.source_q;
-        ptrs.sources_q_dx = elem_ptrs.source_q_dx;
-        ptrs.sources_q_dy = elem_ptrs.source_q_dy;
-        ptrs.sources_q_dz = elem_ptrs.source_q_dz;
+        ptrs.elements_x = elem_ptrs.getX();
+        ptrs.elements_y = elem_ptrs.getY();
+        ptrs.elements_z = elem_ptrs.getZ();
+        ptrs.elements_nx = elem_ptrs.getNX();
+        ptrs.elements_ny = elem_ptrs.getNY();
+        ptrs.elements_nz = elem_ptrs.getNZ();
+        ptrs.elements_area = elem_ptrs.getArea();
+        ptrs.targets_q = elem_ptrs.getTargetQ();
+        ptrs.targets_q_dx = elem_ptrs.getTargetQDX();
+        ptrs.targets_q_dy = elem_ptrs.getTargetQDY();
+        ptrs.targets_q_dz = elem_ptrs.getTargetQDZ();
+        ptrs.sources_q = elem_ptrs.getSourceQ();
+        ptrs.sources_q_dx = elem_ptrs.getSourceQDX();
+        ptrs.sources_q_dy = elem_ptrs.getSourceQDY();
+        ptrs.sources_q_dz = elem_ptrs.getSourceQDZ();
 
         ptrs.ready = true;
         cuda_ptrs_ = ptrs;
