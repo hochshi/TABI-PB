@@ -142,7 +142,7 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
     
     double* __restrict source_term_ptr = source_term_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -249,7 +249,7 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
     double* __restrict source_term_ptr = source_term_.data();
     
     
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -363,7 +363,7 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
 
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -486,7 +486,7 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
     
     const double* __restrict mol_clusters_q_ptr     = mol_interp_charge_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -608,7 +608,7 @@ void SourceTermCompute::upward_pass()
     int* exact_idx_z_ptr = exact_idx_z_.data();
     double* denominator_ptr = denominator_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_UP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -796,7 +796,7 @@ void SourceTermCompute::downward_pass()
     
     double* weights_ptr = elem_weights_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_DOWN");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {

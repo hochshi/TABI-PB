@@ -8,9 +8,6 @@
 // #include "constants.h"
 #include "coulombic_energy_compute.h"
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
 #ifdef USE_CUDA_CC
 #include "coulombic_energy_cuda.h"
 #endif
@@ -109,7 +106,7 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
 
     double* __restrict coul_eng_ptr = coul_eng_vec_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -197,7 +194,7 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
     double* __restrict coul_eng_ptr = coul_eng_vec_.data();
     
     
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -295,7 +292,7 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -388,7 +385,7 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
     
     const double* __restrict mol_clusters_q_ptr     = mol_interp_charge_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CC");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {
@@ -484,7 +481,7 @@ void CoulombicEnergyCompute::upward_pass()
     int* exact_idx_z_ptr = exact_idx_z_.data();
     double* denominator_ptr = denominator_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_UP");
     const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
     if (use_cuda) {

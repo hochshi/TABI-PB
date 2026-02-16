@@ -47,35 +47,6 @@ target_compile_options(tabipb PRIVATE
                        $<$<CONFIG:RELWITHDEBINFO>:-O3>
                        $<$<CONFIG:DEBUG>:-O0 -Wall>)
 
-if (ENABLE_OPENACC)
-    target_link_libraries(tabipb PRIVATE OpenACC::OpenACC_CXX -acc)
-    target_compile_definitions(tabipb PRIVATE OPENACC_ENABLED)
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
-        target_compile_options(tabipb PRIVATE
-            $<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:NVHPC>>:-Minfo=accel>
-            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:NVHPC>>:-Minfo=accel>
-        )
-        # target_compile_options(tabipb PRIVATE -Minfo=accel)
-        if (CMAKE_CUDA_ARCHITECTURES)
-            set(_tabipb_gpu_list "")
-            foreach(_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
-                if (_arch MATCHES "^cc")
-                    list(APPEND _tabipb_gpu_list "${_arch}")
-                else ()
-                    list(APPEND _tabipb_gpu_list "cc${_arch}")
-                endif ()
-            endforeach ()
-            list(JOIN _tabipb_gpu_list "," _tabipb_gpu_list_str)
-            if (_tabipb_gpu_list_str)
-                target_compile_options(tabipb PRIVATE
-                    $<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
-                    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
-                )
-            endif ()
-        endif ()
-    endif ()
-endif ()
-
 if (ENABLE_OPENMP)
     target_link_libraries(tabipb PRIVATE OpenMP::OpenMP_CXX)
 endif ()
@@ -154,34 +125,6 @@ if (ENABLE_TABIPB_APBS)
         set_source_files_properties(interp_pts_cuda.cu PROPERTIES CUDA_STANDARD 11)
         set_source_files_properties(output_cuda.cu PROPERTIES CUDA_STANDARD 11)
         target_link_libraries(${TABIPB_LIBNAME} PRIVATE CUDA::cudart CUDA::cuda_driver CUDA::cublas)
-    endif ()
-
-    if (ENABLE_OPENACC)
-        target_link_libraries(${TABIPB_LIBNAME} PRIVATE OpenACC::OpenACC_CXX -acc)
-        target_compile_definitions(${TABIPB_LIBNAME} PRIVATE OPENACC_ENABLED)
-        if (CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
-            target_compile_options(${TABIPB_LIBNAME} PRIVATE
-                $<$<COMPILE_LANG_AND_ID:C,NVHPC>:-Minfo=accel>
-                $<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-Minfo=accel>
-            )
-            if (CMAKE_CUDA_ARCHITECTURES)
-                set(_tabipb_gpu_list "")
-                foreach(_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
-                    if (_arch MATCHES "^cc")
-                        list(APPEND _tabipb_gpu_list "${_arch}")
-                    else ()
-                        list(APPEND _tabipb_gpu_list "cc${_arch}")
-                    endif ()
-                endforeach ()
-                list(JOIN _tabipb_gpu_list "," _tabipb_gpu_list_str)
-            if (_tabipb_gpu_list_str)
-                target_compile_options(${TABIPB_LIBNAME} PRIVATE
-                    $<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
-                    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:NVHPC>>:-gpu=${_tabipb_gpu_list_str}>
-                )
-            endif ()
-            endif ()
-        endif ()
     endif ()
 
 endif ()

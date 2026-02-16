@@ -665,11 +665,11 @@ void BoundaryElement::particle_particle_interact(double* __restrict potential,
             }
         }
         
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j]                += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j + num_elements] += pot_temp_2;
@@ -778,11 +778,11 @@ void BoundaryElement::particle_cluster_interact(double* __restrict potential,
         }
         }
         
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j]                += targets_q_ptr   [j] * pot_comp_;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j + num_elements] += targets_q_dx_ptr[j] * pot_comp_dx
@@ -890,19 +890,19 @@ void BoundaryElement::cluster_particle_interact(double* __restrict potential,
                           +  sources_q_dz_ptr[k]  * (dz * dz * d2term + d3term)));
         }
     
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_ptr   [jj] += pot_comp_;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dx_ptr[jj] += pot_comp_dx;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dy_ptr[jj] += pot_comp_dy;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dz_ptr[jj] += pot_comp_dz;
@@ -1014,19 +1014,19 @@ void BoundaryElement::cluster_cluster_interact(double* __restrict potential,
         }
         }
     
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_ptr   [jj] += pot_comp_;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dx_ptr[jj] += pot_comp_dx;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dy_ptr[jj] += pot_comp_dy;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         clusters_p_dz_ptr[jj] += pot_comp_dz;
@@ -1060,7 +1060,7 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
     const auto& pp_offsets = interaction_list_.particle_particle_offsets();
     const auto& pp_sources = interaction_list_.particle_particle_flat();
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     const std::uint32_t* __restrict node_begin_ptr = node_particles_begin_u32_.data();
     const std::uint32_t* __restrict node_end_ptr   = node_particles_end_u32_.data();
     const std::uint32_t* __restrict offsets_ptr = pp_offsets_u32_.data();
@@ -1075,7 +1075,7 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 #endif
     std::size_t num_elements = elements_.num();
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     std::size_t offsets_num = pp_offsets_u32_.size();
     std::size_t sources_num = pp_sources_u32_.size();
 #ifdef USE_CUDA_CC
@@ -1140,7 +1140,7 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
         }
     }
 #endif
-#endif  // OPENACC_ENABLED
+#endif  // USE_CUDA_CC
 #if defined(OPENMP_ENABLED)
     #pragma omp parallel for
 #endif
@@ -1214,11 +1214,11 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
                 }
             }
 
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             potential[j]                += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             potential[j + num_elements] += pot_temp_2;
@@ -1273,7 +1273,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
     const auto& pc_offsets = interaction_list_.particle_cluster_offsets();
     const auto& pc_sources = interaction_list_.particle_cluster_flat();
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     const std::uint32_t* __restrict node_begin_ptr = node_particles_begin_u32_.data();
     const std::uint32_t* __restrict node_end_ptr   = node_particles_end_u32_.data();
     const std::uint32_t* __restrict pp_offsets_ptr = pp_offsets_u32_.data();
@@ -1294,7 +1294,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
 #endif
 
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     std::size_t pp_offsets_num = pp_offsets_u32_.size();
     std::size_t pp_sources_num = pp_sources_u32_.size();
     std::size_t pc_offsets_num = pc_offsets_u32_.size();
@@ -1421,7 +1421,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
         std::exit(1);
     }
 #endif
-#endif  // OPENACC_ENABLED
+#endif  // USE_CUDA_CC
     if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
         int n  = num_interp_pts_per_node;
         int n2 = n * n;
@@ -1706,7 +1706,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
             std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
             std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
             if (num_interp_pts_per_node <= kMaxInterpPts) {
                 double dx_cache[kMaxInterpPts];
                 double dy_cache[kMaxInterpPts];
@@ -1832,11 +1832,11 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
             }
         }
 
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j]                += pot_pp_1 + targets_q_ptr   [j] * pot_comp_;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp atomic update
 #endif
         potential[j + num_elements] += pot_pp_2
@@ -1881,7 +1881,7 @@ void BoundaryElement::cluster_particle_interact_all(double* __restrict potential
 
     const auto& cp_offsets = interaction_list_.cluster_particle_offsets();
     const auto& cp_sources = interaction_list_.cluster_particle_flat();
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     const std::uint32_t* __restrict node_begin_ptr = node_particles_begin_u32_.data();
     const std::uint32_t* __restrict node_end_ptr   = node_particles_end_u32_.data();
     const std::uint32_t* __restrict offsets_ptr = cp_offsets_u32_.data();
@@ -1968,19 +1968,19 @@ void BoundaryElement::cluster_particle_interact_all(double* __restrict potential
                 }
             }
 
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_ptr   [jj] += pot_comp_;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_dx_ptr[jj] += pot_comp_dx;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_dy_ptr[jj] += pot_comp_dy;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_dz_ptr[jj] += pot_comp_dz;
@@ -2038,7 +2038,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
     const auto& cp_sources = interaction_list_.cluster_particle_flat();
     const auto& cc_offsets = interaction_list_.cluster_cluster_offsets();
     const auto& cc_sources = interaction_list_.cluster_cluster_flat();
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     const std::uint32_t* __restrict node_begin_ptr = node_particles_begin_u32_.data();
     const std::uint32_t* __restrict node_end_ptr   = node_particles_end_u32_.data();
     const std::uint32_t* __restrict cp_offsets_ptr = cp_offsets_u32_.data();
@@ -2060,7 +2060,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
     const int n3 = n2 * n;
 
     if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
     const char* require_cuda_env = std::getenv("TABIPB_CUDA_REQUIRE_CC");
@@ -2134,7 +2134,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
         }
 #endif
 
-#endif  // OPENACC_ENABLED
+#endif  // USE_CUDA_CC
         for (std::size_t target_node_idx = 0; target_node_idx < num_nodes; ++target_node_idx) {
             std::size_t target_cluster_interp_pts_begin = target_node_idx * num_interp_pts_per_node;
             std::size_t target_cluster_potentials_begin = target_node_idx * num_charges_per_node;
@@ -2554,7 +2554,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                 std::size_t source_cluster_interp_pts_begin = source_node_idx * num_interp_pts_per_node;
                 std::size_t source_cluster_charges_begin    = source_node_idx * num_charges_per_node;
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
                 if (num_interp_pts_per_node <= kMaxInterpPts) {
                     double dx_cache[kMaxInterpPts];
                     double dy_cache[kMaxInterpPts];
@@ -2680,19 +2680,19 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
                 }
             }
 
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_ptr   [jj] += pot_comp_;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_dx_ptr[jj] += pot_comp_dx;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_dy_ptr[jj] += pot_comp_dy;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
             #pragma omp atomic update
 #endif
             clusters_p_dz_ptr[jj] += pot_comp_dz;
@@ -2746,12 +2746,12 @@ void BoundaryElement::upward_pass()
     const std::size_t* __restrict level_nodes_ptr = level_nodes_.data();
     std::size_t level_count = level_offsets_.empty() ? 0 : (level_offsets_.size() - 1);
     std::size_t level_nodes_num = level_nodes_.size();
-#ifndef OPENACC_ENABLED
+#ifndef USE_CUDA_CC
     (void)num_nodes;
     (void)level_nodes_num;
 #endif
 
-#if defined(USE_CUDA_CC) && defined(OPENACC_ENABLED)
+#if defined(USE_CUDA_CC)
     const char* dbg_env = std::getenv("TABIPB_CUDA_UPWARD_DEBUG");
     const bool debug_cuda_upward = (dbg_env && std::strcmp(dbg_env, "0") != 0);
     if (debug_cuda_upward) {
@@ -3085,12 +3085,12 @@ void BoundaryElement::downward_pass(double* __restrict potential)
     const std::size_t* __restrict level_nodes_ptr = level_nodes_.data();
     std::size_t level_count = level_offsets_.empty() ? 0 : (level_offsets_.size() - 1);
     std::size_t level_nodes_num = level_nodes_.size();
-#ifndef OPENACC_ENABLED
+#ifndef USE_CUDA_CC
     (void)num_nodes;
     (void)level_nodes_num;
 #endif
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -3351,11 +3351,11 @@ void BoundaryElement::downward_pass(double* __restrict potential)
                 double pot_temp_2 = targets_q_dx[i] * pot_comp_dx
                                   + targets_q_dy[i] * pot_comp_dy
                                   + targets_q_dz[i] * pot_comp_dz;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
                 #pragma omp atomic update
 #endif
                 potential_base[i] += pot_temp_1;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
                 #pragma omp atomic update
 #endif
                 potential_norm[i] += pot_temp_2;
@@ -3370,7 +3370,7 @@ void BoundaryElement::clear_cluster_charges()
 {
     timers_.clear_cluster_charges.start();
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     std::size_t num_charges = num_charges_;
     double* __restrict clusters_q_ptr    = interp_charge_.data();
     double* __restrict clusters_q_dx_ptr = interp_charge_dx_.data();
@@ -3417,7 +3417,7 @@ void BoundaryElement::clear_cluster_potentials()
 {
     timers_.clear_cluster_potentials.start();
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     std::size_t num_potentials = num_charges_;
     double* __restrict clusters_p_ptr    = interp_potential_.data();
     double* __restrict clusters_p_dx_ptr = interp_potential_dx_.data();
@@ -3475,7 +3475,7 @@ bool BoundaryElement::validate_device_buffers_matrix_vector_(
     if (!device_buffers_.potential_temp) {
         return false;
     }
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     const std::size_t potential_num = potential_.size();
     if (potential_num > 0) {
         if (!cuda_pointer_is_device_accessible(potential_new)) {
@@ -3553,7 +3553,7 @@ bool BoundaryElement::validate_device_buffers_upward_(bool use_split) const
     if (!ok) {
         return false;
     }
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     if (use_split) {
         return b.exact_idx_x && b.exact_idx_y && b.exact_idx_z && b.denominator;
     }
@@ -3575,7 +3575,7 @@ bool BoundaryElement::validate_device_buffers_downward_(const double* potential)
           b.weights && b.node_begin && b.node_end && b.level_nodes)) {
         return false;
     }
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     const std::size_t num = potential_.size();
     if (num > 0 && !cuda_pointer_is_device_accessible(potential)) {
         return false;

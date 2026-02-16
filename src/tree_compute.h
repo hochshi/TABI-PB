@@ -75,7 +75,7 @@ public:
         std::size_t pc_calls = 0;
         std::size_t cp_calls = 0;
         std::size_t cc_calls = 0;
-#if defined(OPENMP_ENABLED) && !defined(OPENACC_ENABLED)
+#if defined(OPENMP_ENABLED)
         #pragma omp parallel for
 #endif
         for (std::size_t target_node_idx = 0; target_node_idx < target_tree_.num_nodes(); ++target_node_idx) {

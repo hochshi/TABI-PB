@@ -132,7 +132,7 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
 
     double* __restrict solv_eng_ptr = solv_eng_vec_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -258,7 +258,7 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
 
     double* __restrict solv_eng_ptr = solv_eng_vec_.data();
     
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -389,7 +389,7 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
 
     const double* __restrict mol_q_ptr = molecule_.charge_ptr();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -524,7 +524,7 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
     
     const double* __restrict mol_clusters_q_ptr     = mol_interp_charge_.data();
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -683,7 +683,7 @@ void SolvationEnergyCompute::upward_pass()
     }
 #endif
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
@@ -952,7 +952,7 @@ void SolvationEnergyCompute::downward_pass()
     }
 #endif
 
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);

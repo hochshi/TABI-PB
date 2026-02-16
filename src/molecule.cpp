@@ -189,7 +189,7 @@ void Timers_Molecule::print() const {
   std::cout << "|   |...build_xyzr_file............: ";
   std::cout << std::setw(12) << std::right << build_xyzr_file.elapsed_time()
             << std::endl;
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
   std::cout << "|   |...copyin_to_device...........: ";
   std::cout << std::setw(12) << std::right << copyin_to_device.elapsed_time()
             << std::endl;

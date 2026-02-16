@@ -9,10 +9,6 @@
 
 #include "cuda_state.h"
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
-
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
         cudaError_t err__ = (call);                                             \
@@ -101,37 +97,6 @@ inline bool cuda_pointer_is_device_accessible(const void* ptr) {
     return attr.memoryType == cudaMemoryTypeDevice;
 #endif
 }
-
-#ifdef OPENACC_ENABLED
-inline bool CUDA_ACC_IS_PRESENT(const void* host_ptr, std::size_t bytes) {
-    if (bytes == 0) {
-        return false;
-    }
-    return acc_is_present(const_cast<void*>(host_ptr), bytes) != 0;
-}
-
-inline bool cuda_pointer_mapped(const void* host_ptr, std::size_t bytes) {
-    return CUDA_ACC_IS_PRESENT(host_ptr, bytes);
-}
-
-inline void CUDA_ACC_UNMAP_IF_PRESENT(const void* host_ptr, std::size_t bytes) {
-    if (CUDA_ACC_IS_PRESENT(host_ptr, bytes)) {
-        acc_unmap_data(const_cast<void*>(host_ptr));
-    }
-}
-
-inline void CUDA_ACC_MAP_CONST(const void* host_ptr, void* dev_ptr,
-                               std::size_t bytes) {
-    if (bytes == 0) {
-        return;
-    }
-    acc_map_data(const_cast<void*>(host_ptr), dev_ptr, bytes);
-}
-#else
-inline bool cuda_pointer_mapped(const void*, std::size_t) {
-    return false;
-}
-#endif
 
 #else
 #error "cuda_helpers.h requires USE_CUDA_CC"

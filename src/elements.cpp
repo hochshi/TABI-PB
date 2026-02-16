@@ -421,7 +421,7 @@ void Elements::compute_source_term() {
 
   double *__restrict elements_source_term_ptr = source_term_.data();
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
 #ifdef USE_CUDA_CC
   {
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
@@ -582,7 +582,7 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
   double *__restrict source_q_dy_ptr = source_charge_dy_.data();
   double *__restrict source_q_dz_ptr = source_charge_dz_.data();
 
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
 #ifdef USE_CUDA_CC
   {
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
@@ -876,7 +876,7 @@ void Timers_Elements::print() const {
   std::cout << "|   |...compute_charges............: ";
   std::cout << std::setw(12) << std::right << compute_charges.elapsed_time()
             << std::endl;
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
   std::cout << "|   |...copyin_to_device...........: ";
   std::cout << std::setw(12) << std::right << copyin_to_device.elapsed_time()
             << std::endl;

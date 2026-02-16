@@ -21,9 +21,6 @@
 #include "output_cuda.h"
 #endif
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
 
 Output::Output(class Molecule& mol, class Elements& elem, const struct Params& params, struct Timers_Output& timers)
     : molecule_(mol), elements_(elem), params_(params), timers_(timers), potential_offset_(elements_.num())
@@ -213,7 +210,7 @@ void Output::compute_solvation_energy()
         }
     }
 #endif
-#ifdef OPENACC_ENABLED
+#ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
