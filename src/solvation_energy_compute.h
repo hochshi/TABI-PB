@@ -39,6 +39,7 @@ private:
     
     const std::size_t potential_offset_;
     std::vector<double>& potential_;
+    const double* potential_device_ptr_;
     
     
     /* Source clusters */
@@ -165,7 +166,8 @@ public:
                       const class Tree& elem_tree,
                       const class Molecule& molecule, const class InterpolationPoints& mol_interp_pts,
                       const class Tree& mol_tree,
-                      const class InteractionList& interaction_list, double phys_eps, double phys_kappa);
+                      const class InteractionList& interaction_list, double phys_eps, double phys_kappa,
+                      const double* potential_device_ptr);
 
     ~SolvationEnergyCompute() = default;
     

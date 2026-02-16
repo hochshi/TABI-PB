@@ -1,6 +1,7 @@
 #include <iostream>
 // #include <iomanip>
 #include <cstdlib>
+#include <cstring>
 
 #include "boundary_element.h"
 #include "elements.h"
@@ -41,6 +42,11 @@ int main(int argc, char *argv[]) {
   }
   struct Params params(argv[1]);
   struct Timers timers;
+  const char* debug_env = std::getenv("TABIPB_DEBUG_PROGRESS");
+  const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+  const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+  const bool debug_progress = require_all ||
+                              (debug_env && std::strcmp(debug_env, "0") != 0);
 
   timers.tabipb.start();
 
@@ -87,9 +93,19 @@ int main(int argc, char *argv[]) {
 
   boundary_element.run_GMRES();
 
+  if (debug_progress) {
+    std::cerr << "[DEBUG] main: output.compute_coulombic_energy(FMM) begin\n";
+  }
   output.compute_coulombic_energy(mol_interp_pts, mol_tree, mol_ilist);
+  if (debug_progress) {
+    std::cerr << "[DEBUG] main: output.compute_coulombic_energy(FMM) end\n";
+    std::cerr << "[DEBUG] main: output.compute_solvation_energy(FMM) begin\n";
+  }
   output.compute_solvation_energy(elem_interp_pts, elem_tree, mol_interp_pts,
                                   mol_tree, mol_elem_ilist);
+  if (debug_progress) {
+    std::cerr << "[DEBUG] main: output.compute_solvation_energy(FMM) end\n";
+  }
 
   molecule.delete_from_device();
   mol_interp_pts.delete_from_device();

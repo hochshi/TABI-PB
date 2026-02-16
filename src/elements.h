@@ -18,8 +18,6 @@ struct Timers_Elements;
 
 class Elements : public Particles {
 private:
-  friend class BoundaryElement;
-
   const class Molecule &molecule_;
   struct Timers_Elements &timers_;
 
@@ -119,7 +117,6 @@ private:
 #ifdef USE_CUDA_CC
   class DeviceBuffers {
     friend class Elements;
-    friend class BoundaryElement;
   private:
     bool ready = false;
     double* x = nullptr;

@@ -158,6 +158,15 @@ BoundaryElement::BoundaryElement(class Elements& elements, const class Interpola
 void BoundaryElement::run_GMRES()
 {
     timers_.run_GMRES.start();
+    const char* debug_env = std::getenv("TABIPB_DEBUG_PROGRESS");
+    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool debug_progress = require_all ||
+                                (debug_env && std::strcmp(debug_env, "0") != 0);
+    const char* skip_flush_env = std::getenv("TABIPB_DEBUG_SKIP_BE_TIMER_FLUSH");
+    const bool skip_timer_flush = (skip_flush_env && std::strcmp(skip_flush_env, "0") != 0);
+    const char* skip_delete_env = std::getenv("TABIPB_DEBUG_SKIP_BE_DELETE");
+    const bool skip_delete = (skip_delete_env && std::strcmp(skip_delete_env, "0") != 0);
 
     long int restrt = params_.gmres_restart_;
     long int length = output_.potential().size();
@@ -179,11 +188,40 @@ void BoundaryElement::run_GMRES()
     int err_code = BoundaryElement::gmres_(length, elements_.source_term_ptr(), output_.potential().data(),
                                     restrt, work, ldw, h, ldh, num_iter, residual);
 
+    if (!err_code) {
+        std::cout << "GMRES completed. " << num_iter << " iterations, "
+                  << residual << " residual." << std::endl;
+    }
+
 #ifdef USE_CUDA_CC
-    flush_cuda_timers_();
+    if (skip_timer_flush) {
+        if (debug_progress) {
+            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: flush_cuda_timers_ skipped\n";
+        }
+    } else {
+        if (debug_progress) {
+            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: flush_cuda_timers_ begin\n";
+        }
+        flush_cuda_timers_();
+        if (debug_progress) {
+            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: flush_cuda_timers_ end\n";
+        }
+    }
 #endif
 
-    BoundaryElement::delete_clusters_from_device();
+    if (skip_delete) {
+        if (debug_progress) {
+            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: delete_clusters_from_device skipped\n";
+        }
+    } else {
+        if (debug_progress) {
+            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: delete_clusters_from_device begin\n";
+        }
+        BoundaryElement::delete_clusters_from_device();
+        if (debug_progress) {
+            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: delete_clusters_from_device end\n";
+        }
+    }
     
     output_.set_residual(residual);
     output_.set_num_iter(num_iter);
@@ -192,8 +230,6 @@ void BoundaryElement::run_GMRES()
         std::cout << "GMRES error code " << err_code << ". Exiting.";
         std::exit(1);
     }
-    
-    std::cout << "GMRES completed. " << num_iter << " iterations, " << residual << " residual.";
 
     timers_.run_GMRES.stop();
 }

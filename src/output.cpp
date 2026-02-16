@@ -338,14 +338,24 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
                                       const class InteractionList& interaction_list)
 {
     timers_.compute_solvation_energy.start();
+    const char* debug_env = std::getenv("TABIPB_DEBUG_PROGRESS");
+    const char* require_all_env_dbg = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
+    const bool require_all_dbg =
+        (require_all_env_dbg && std::strcmp(require_all_env_dbg, "0") != 0);
+    const bool debug_progress = require_all_dbg ||
+                                (debug_env && std::strcmp(debug_env, "0") != 0);
     const double* __restrict potential_ptr = potential_.data();
     std::size_t potential_num = potential_.size();
+    const double* potential_device_ptr = nullptr;
 
 #if defined(OPENACC_ENABLED) && !defined(USE_CUDA_CC)
     #pragma acc enter data copyin(potential_ptr[0:potential_num])
 #endif
 #ifdef USE_CUDA_CC
     auto &buf = device_buffers_;
+    if (debug_progress) {
+        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): potential copy/map begin\n";
+    }
     if (buf.potential_num != 0 && buf.potential_num != potential_num) {
         CUDA_FREE_AND_NULL(buf.potential_dev);
         buf.potential_num = 0;
@@ -371,6 +381,10 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     CUDA_SYNC_AND_CHECK();
     buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
+    potential_device_ptr = buf.potential_dev;
+    if (debug_progress) {
+        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): potential copy/map end\n";
+    }
 #endif
 #ifdef USE_CUDA_CC
     {
@@ -386,12 +400,23 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     }
 #endif
     
+    if (debug_progress) {
+        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute ctor begin\n";
+    }
     class SolvationEnergyCompute solvation_energy(potential_,
                                                   elements_, elem_interp_pts, elem_tree,
                                                   molecule_, mol_interp_pts, mol_tree,
-                                                  interaction_list, params_.phys_eps_, params_.phys_kappa_);
+                                                  interaction_list, params_.phys_eps_, params_.phys_kappa_,
+                                                  potential_device_ptr);
+    if (debug_progress) {
+        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute ctor end\n";
+        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute::compute begin\n";
+    }
                                                   
     solvation_energy_ = solvation_energy.compute();
+    if (debug_progress) {
+        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute::compute end\n";
+    }
 
 #ifdef USE_CUDA_CC
 #ifdef OPENACC_ENABLED
@@ -403,6 +428,9 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
     buf.potential_num = 0;
     buf.ready = false;
     device_state_ = CudaDeviceState::HostOnly;
+    if (debug_progress) {
+        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): potential cleanup end\n";
+    }
 #elif defined(OPENACC_ENABLED)
     #pragma acc exit data delete(potential_ptr[0:potential_num])
 #endif

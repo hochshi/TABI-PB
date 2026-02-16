@@ -84,6 +84,24 @@
         }                                                                       \
     } while (0)
 
+inline bool cuda_pointer_is_device_accessible(const void* ptr) {
+    if (ptr == nullptr) {
+        return false;
+    }
+    cudaPointerAttributes attr;
+    cudaError_t err = cudaPointerGetAttributes(&attr, ptr);
+    if (err != cudaSuccess) {
+        // Query can fail for plain host pointers; clear sticky error and report not-device.
+        (void)cudaGetLastError();
+        return false;
+    }
+#if CUDART_VERSION >= 10000
+    return attr.type == cudaMemoryTypeDevice || attr.type == cudaMemoryTypeManaged;
+#else
+    return attr.memoryType == cudaMemoryTypeDevice;
+#endif
+}
+
 #ifdef OPENACC_ENABLED
 inline bool CUDA_ACC_IS_PRESENT(const void* host_ptr, std::size_t bytes) {
     if (bytes == 0) {
