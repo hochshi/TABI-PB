@@ -362,7 +362,7 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
 
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    if (!cuda_ptrs_.ready) {
+    if (device_state_ != CudaDeviceState::DeviceMapped || !device_buffers_.ready) {
         if (require_all) {
             std::cerr << "[CUDA_BE] require_all set but CUDA pointers not cached. "
                       << "Aborting to avoid OpenACC fallback.\n";
@@ -372,7 +372,7 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
         return;
     }
 
-    const CudaPtrs& cp = cuda_ptrs_;
+    const DeviceBuffers& cp = device_buffers_;
     const std::size_t potential_num = potential_.size();
     const double potential_coeff_1 = 0.5 * (1. + params_.phys_eps_);
     const double potential_coeff_2 = 0.5 * (1. + 1. / params_.phys_eps_);
@@ -3776,15 +3776,16 @@ void BoundaryElement::clear_cluster_potentials()
 }
 
 #ifdef USE_CUDA_CC
-void BoundaryElement::reset_cuda_ptrs_() const
+void BoundaryElement::reset_device_buffers_() const
 {
-    cuda_ptrs_ = CudaPtrs{};
+    device_buffers_ = DeviceBuffers{};
+    device_state_ = CudaDeviceState::HostOnly;
 }
 
-void BoundaryElement::cache_cuda_ptrs_() const
+void BoundaryElement::cache_device_buffers_() const
 {
 #ifdef OPENACC_ENABLED
-    CudaPtrs ptrs;
+    DeviceBuffers ptrs;
     ptrs.num_nodes = node_particles_begin_u32_.size();
     ptrs.level_nodes_num = level_nodes_.size();
 
@@ -3918,7 +3919,8 @@ void BoundaryElement::cache_cuda_ptrs_() const
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
     if (!present_ok) {
         ptrs.ready = false;
-        cuda_ptrs_ = ptrs;
+        device_buffers_ = ptrs;
+        device_state_ = CudaDeviceState::HostOnly;
         if (require_all) {
             std::cerr << "[CUDA_BE] require_all set but CUDA pointers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
@@ -3968,9 +3970,10 @@ void BoundaryElement::cache_cuda_ptrs_() const
     ptrs.cc_sources = static_cast<std::uint32_t*>(acc_deviceptr((void*)cc_sources_ptr));
     ptrs.level_nodes = static_cast<std::size_t*>(acc_deviceptr((void*)level_nodes_ptr));
     ptrs.ready = true;
-    cuda_ptrs_ = ptrs;
+    device_buffers_ = ptrs;
+    device_state_ = CudaDeviceState::DeviceMapped;
 #else
-    reset_cuda_ptrs_();
+    reset_device_buffers_();
 #endif
 }
 
@@ -4024,19 +4027,19 @@ void BoundaryElement::copyin_clusters_to_device() const
     const bool require_all =
         (require_all_env && std::strcmp(require_all_env, "0") != 0);
     if (require_all) {
-        if (cuda_ptrs_.ready) {
+        if (device_state_ == CudaDeviceState::DeviceMapped && device_buffers_.ready) {
             timers_.copyin_clusters_to_device.stop();
             return;
         }
 
-        const auto& elem_ptrs = elements_.cuda_ptrs();
+        const auto& elem_ptrs = elements_.device_buffers();
         if (!elem_ptrs.getReady()) {
             std::cerr << "[CUDA_BE] require_all set but Elements CUDA pointers not ready. "
                       << "Did you call elements.copyin_to_device()?\n";
             std::exit(1);
         }
 
-        CudaPtrs ptrs;
+        DeviceBuffers ptrs;
         ptrs.num_nodes = node_particles_begin_u32_.size();
         ptrs.level_nodes_num = level_nodes_.size();
 
@@ -4244,7 +4247,8 @@ void BoundaryElement::copyin_clusters_to_device() const
         ptrs.sources_q_dz = elem_ptrs.getSourceQDZ();
 
         ptrs.ready = true;
-        cuda_ptrs_ = ptrs;
+        device_buffers_ = ptrs;
+        device_state_ = CudaDeviceState::DeviceMapped;
         timers_.copyin_clusters_to_device.stop();
         return;
     }
@@ -4331,7 +4335,7 @@ void BoundaryElement::copyin_clusters_to_device() const
                 cp_sources_ptr[0:cp_sources_num], cc_sources_ptr[0:cc_sources_num])
 #endif
 #ifdef USE_CUDA_CC
-    cache_cuda_ptrs_();
+    cache_device_buffers_();
 #endif
 
     timers_.copyin_clusters_to_device.stop();
@@ -4347,35 +4351,36 @@ void BoundaryElement::delete_clusters_from_device() const
     const bool require_all =
         (require_all_env && std::strcmp(require_all_env, "0") != 0);
     if (require_all) {
-        if (cuda_ptrs_.ready) {
-            if (cuda_ptrs_.owns_clusters_xyz) {
-                cudaFree(cuda_ptrs_.clusters_x);
-                cudaFree(cuda_ptrs_.clusters_y);
-                cudaFree(cuda_ptrs_.clusters_z);
+        if (device_state_ == CudaDeviceState::DeviceMapped && device_buffers_.ready) {
+            if (device_buffers_.owns_clusters_xyz) {
+                cudaFree(device_buffers_.clusters_x);
+                cudaFree(device_buffers_.clusters_y);
+                cudaFree(device_buffers_.clusters_z);
             }
-            cudaFree(cuda_ptrs_.clusters_q);
-            cudaFree(cuda_ptrs_.clusters_q_dx);
-            cudaFree(cuda_ptrs_.clusters_q_dy);
-            cudaFree(cuda_ptrs_.clusters_q_dz);
-            cudaFree(cuda_ptrs_.clusters_p);
-            cudaFree(cuda_ptrs_.clusters_p_dx);
-            cudaFree(cuda_ptrs_.clusters_p_dy);
-            cudaFree(cuda_ptrs_.clusters_p_dz);
-            cudaFree(cuda_ptrs_.weights);
-            cudaFree(cuda_ptrs_.potential_temp);
-            cudaFree(cuda_ptrs_.node_begin);
-            cudaFree(cuda_ptrs_.node_end);
-            cudaFree(cuda_ptrs_.element_node_idx);
-            cudaFree(cuda_ptrs_.pp_offsets);
-            cudaFree(cuda_ptrs_.pp_sources);
-            cudaFree(cuda_ptrs_.pc_offsets);
-            cudaFree(cuda_ptrs_.pc_sources);
-            cudaFree(cuda_ptrs_.cp_offsets);
-            cudaFree(cuda_ptrs_.cp_sources);
-            cudaFree(cuda_ptrs_.cc_offsets);
-            cudaFree(cuda_ptrs_.cc_sources);
-            cudaFree(cuda_ptrs_.level_nodes);
-            cuda_ptrs_ = CudaPtrs{};
+            cudaFree(device_buffers_.clusters_q);
+            cudaFree(device_buffers_.clusters_q_dx);
+            cudaFree(device_buffers_.clusters_q_dy);
+            cudaFree(device_buffers_.clusters_q_dz);
+            cudaFree(device_buffers_.clusters_p);
+            cudaFree(device_buffers_.clusters_p_dx);
+            cudaFree(device_buffers_.clusters_p_dy);
+            cudaFree(device_buffers_.clusters_p_dz);
+            cudaFree(device_buffers_.weights);
+            cudaFree(device_buffers_.potential_temp);
+            cudaFree(device_buffers_.node_begin);
+            cudaFree(device_buffers_.node_end);
+            cudaFree(device_buffers_.element_node_idx);
+            cudaFree(device_buffers_.pp_offsets);
+            cudaFree(device_buffers_.pp_sources);
+            cudaFree(device_buffers_.pc_offsets);
+            cudaFree(device_buffers_.pc_sources);
+            cudaFree(device_buffers_.cp_offsets);
+            cudaFree(device_buffers_.cp_sources);
+            cudaFree(device_buffers_.cc_offsets);
+            cudaFree(device_buffers_.cc_sources);
+            cudaFree(device_buffers_.level_nodes);
+            device_buffers_ = DeviceBuffers{};
+            device_state_ = CudaDeviceState::HostOnly;
         }
         timers_.delete_clusters_from_device.stop();
         return;
@@ -4463,7 +4468,7 @@ void BoundaryElement::delete_clusters_from_device() const
                 cp_sources_ptr[0:cp_sources_num], cc_sources_ptr[0:cc_sources_num])
 #endif
 #ifdef USE_CUDA_CC
-    reset_cuda_ptrs_();
+    reset_device_buffers_();
 #endif
 
     timers_.delete_clusters_from_device.stop();

@@ -10,6 +10,7 @@
 #include "interaction_list.h"
 #ifdef USE_CUDA_CC
 #include <cuda_runtime.h>
+#include "cuda_state.h"
 #endif
 
 struct Timers_BoundaryElement;
@@ -69,7 +70,9 @@ private:
     std::vector<std::uint32_t> cc_sources_u32_;
 
 #ifdef USE_CUDA_CC
-    struct CudaPtrs {
+    class DeviceBuffers {
+        friend class BoundaryElement;
+    private:
         bool ready = false;
         bool owns_clusters_xyz = true;
         double* clusters_x = nullptr;
@@ -115,7 +118,8 @@ private:
         std::size_t level_nodes_num = 0;
         std::size_t num_nodes = 0;
     };
-    mutable CudaPtrs cuda_ptrs_;
+    mutable DeviceBuffers device_buffers_;
+    mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
     struct CudaTimerSection {
         cudaEvent_t start = nullptr;
         cudaEvent_t stop = nullptr;
@@ -154,8 +158,8 @@ private:
     void matrix_vector_cuda(double alpha, const double* potential_old_dev,
                             double beta, double* potential_new_dev,
                             void* stream);
-    void cache_cuda_ptrs_() const;
-    void reset_cuda_ptrs_() const;
+    void cache_device_buffers_() const;
+    void reset_device_buffers_() const;
 #endif
                        
     void precondition_diagonal(double* z, double* r);

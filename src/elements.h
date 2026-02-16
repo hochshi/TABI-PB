@@ -156,8 +156,6 @@ public:
     std::size_t getNum() const { return num; }
   };
 
-  // Compatibility accessor for existing callers; to be removed after full unification.
-  const DeviceBuffers& cuda_ptrs() const { return device_buffers_; }
   const DeviceBuffers& device_buffers() const { return device_buffers_; }
   void reset_device_buffers_() const;
 #endif
