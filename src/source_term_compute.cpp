@@ -8,11 +8,7 @@
 #ifdef OPENACC_ENABLED
 #include <openacc.h>
 #endif
-#if defined(OPENACC_ENABLED) && defined(USE_CUDA_CC)
-#include <cuda.h>
-extern "C" {
-    CUcontext acc_get_cuda_context(void) __attribute__((weak));
-}
+#ifdef USE_CUDA_CC
 #include "source_term_cuda.h"
 #endif
 
@@ -22,10 +18,6 @@ extern "C" {
 
 #ifdef USE_CUDA_CC
 #include "cuda_helpers.h"
-#endif
-
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
 #endif
 
 namespace {
@@ -164,32 +156,19 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_particle_particle_();
         if (present_ok) {
+            const auto elem_dev = elements_.device_view();
+            const auto mol_dev = molecule_.device_view();
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
-            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
-                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
-                                             mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                             source_term_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                source_term_pp_cuda(
-                    elem_x_ptr, elem_y_ptr, elem_z_ptr,
-                    elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
-                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                    target_node_begin, target_node_end,
-                    source_node_begin, source_node_end,
-                    one_over_4pi_eps_solute_,
-                    source_term_ptr, source_term_offset_,
-                    stream);
-            }
+            source_term_pp_cuda(
+                elem_dev.x, elem_dev.y, elem_dev.z,
+                elem_dev.nx, elem_dev.ny, elem_dev.nz,
+                mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+                target_node_begin, target_node_end,
+                source_node_begin, source_node_end,
+                one_over_4pi_eps_solute_,
+                elem_dev.source_term, source_term_offset_,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -284,36 +263,24 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_particle_cluster_();
         if (present_ok) {
+            const auto elem_dev = elements_.device_view();
+            const auto mol_interp_dev = mol_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
-            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
-                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
-                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                                             mol_clusters_q_ptr, source_term_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                source_term_pc_cuda(
-                    elem_x_ptr, elem_y_ptr, elem_z_ptr,
-                    elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
-                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
-                    mol_clusters_q_ptr,
-                    source_node_idx,
-                    num_mol_interp_pts_per_node_,
-                    num_mol_interp_charges_per_node_,
-                    target_node_begin,
-                    target_node_end,
-                    one_over_4pi_eps_solute_,
-                    source_term_ptr, source_term_offset_,
-                    stream);
-            }
+            source_term_pc_cuda(
+                elem_dev.x, elem_dev.y, elem_dev.z,
+                elem_dev.nx, elem_dev.ny, elem_dev.nz,
+                mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
+                self_dev.q,
+                source_node_idx,
+                num_mol_interp_pts_per_node_,
+                num_mol_interp_charges_per_node_,
+                target_node_begin,
+                target_node_end,
+                one_over_4pi_eps_solute_,
+                elem_dev.source_term, source_term_offset_,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -410,35 +377,23 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_cluster_particle_();
         if (present_ok) {
+            const auto elem_interp_dev = elem_interp_pts_.device_view();
+            const auto mol_dev = molecule_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
-            #pragma acc host_data use_device(elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
-                                             elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
-                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr, \
-                                             mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                source_term_cp_cuda(
-                    elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
-                    elem_clusters_p_ptr, elem_clusters_p_dx_ptr,
-                    elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
-                    mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                    target_node_idx,
-                    num_elem_interp_pts_per_node_,
-                    num_elem_interp_potentials_per_node_,
-                    source_node_begin,
-                    source_node_end,
-                    one_over_4pi_eps_solute_,
-                    stream);
-            }
+            source_term_cp_cuda(
+                elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
+                self_dev.p, self_dev.p_dx,
+                self_dev.p_dy, self_dev.p_dz,
+                mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+                target_node_idx,
+                num_elem_interp_pts_per_node_,
+                num_elem_interp_potentials_per_node_,
+                source_node_begin,
+                source_node_end,
+                one_over_4pi_eps_solute_,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -545,37 +500,25 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_cluster_cluster_();
         if (present_ok) {
+            const auto elem_interp_dev = elem_interp_pts_.device_view();
+            const auto mol_interp_dev = mol_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
-            #pragma acc host_data use_device(elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
-                                             elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
-                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr, \
-                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, mol_clusters_q_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
-                }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                source_term_cc_cuda(
-                    elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
-                    elem_clusters_p_ptr, elem_clusters_p_dx_ptr,
-                    elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
-                    mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
-                    mol_clusters_q_ptr,
-                    target_node_idx,
-                    source_node_idx,
-                    num_elem_interp_pts_per_node_,
-                    num_elem_interp_potentials_per_node_,
-                    num_mol_interp_pts_per_node_,
-                    num_mol_interp_charges_per_node_,
-                    one_over_4pi_eps_solute_,
-                    stream);
-            }
+            source_term_cc_cuda(
+                elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
+                self_dev.p, self_dev.p_dx,
+                self_dev.p_dy, self_dev.p_dz,
+                mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
+                self_dev.q,
+                target_node_idx,
+                source_node_idx,
+                num_elem_interp_pts_per_node_,
+                num_elem_interp_potentials_per_node_,
+                num_mol_interp_pts_per_node_,
+                num_mol_interp_charges_per_node_,
+                one_over_4pi_eps_solute_,
+                stream);
+            CUDA_CHECK_LAST_KERNEL();
             return;
         }
     }
@@ -679,44 +622,31 @@ void SourceTermCompute::upward_pass()
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_upward_pass_();
         if (present_ok) {
+            const auto mol_dev = molecule_.device_view();
+            const auto mol_interp_dev = mol_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
-            #pragma acc host_data use_device(mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr, \
-                                             mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr, \
-                                             mol_clusters_q_ptr, weights_ptr, \
-                                             exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr, \
-                                             denominator_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
+            for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
+                auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+                std::size_t particle_start = particle_idxs[0];
+                std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+                if (num_particles == 0) {
+                    continue;
                 }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
-                    auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
-                    std::size_t particle_start = particle_idxs[0];
-                    std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
-                    if (num_particles == 0) {
-                        continue;
-                    }
-                    source_term_up_cuda(
-                        mol_x_ptr, mol_y_ptr, mol_z_ptr, mol_q_ptr,
-                        mol_clusters_x_ptr, mol_clusters_y_ptr, mol_clusters_z_ptr,
-                        mol_clusters_q_ptr,
-                        weights_ptr,
-                        exact_idx_x_ptr, exact_idx_y_ptr, exact_idx_z_ptr,
-                        denominator_ptr,
-                        node_idx,
-                        num_mol_interp_pts_per_node_,
-                        num_mol_interp_charges_per_node_,
-                        particle_start,
-                        num_particles,
-                        stream);
-                }
+                source_term_up_cuda(
+                    mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+                    mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
+                    self_dev.q,
+                    self_dev.mol_weights,
+                    self_dev.exact_idx_x, self_dev.exact_idx_y, self_dev.exact_idx_z,
+                    self_dev.denominator,
+                    node_idx,
+                    num_mol_interp_pts_per_node_,
+                    num_mol_interp_charges_per_node_,
+                    particle_start,
+                    num_particles,
+                    stream);
+                CUDA_CHECK_LAST_KERNEL();
             }
             #pragma acc wait(kSourceTermAsync)
             return;
@@ -880,47 +810,33 @@ void SourceTermCompute::downward_pass()
     if (use_cuda) {
         const bool present_ok = validate_device_buffers_downward_pass_();
         if (present_ok) {
+            const auto elem_dev = elements_.device_view();
+            const auto elem_interp_dev = elem_interp_pts_.device_view();
+            const auto self_dev = device_view();
             void* stream = acc_get_cuda_stream(kSourceTermAsync);
-            #pragma acc host_data use_device(elem_x_ptr, elem_y_ptr, elem_z_ptr, \
-                                             elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr, \
-                                             elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr, \
-                                             elem_clusters_p_ptr, elem_clusters_p_dx_ptr, \
-                                             elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr, \
-                                             weights_ptr, source_term_ptr)
-            {
-                CUcontext acc_ctx = nullptr;
-                if (acc_get_cuda_context) {
-                    acc_ctx = acc_get_cuda_context();
+            for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
+                auto particle_idxs = target_tree_.node_particle_idxs(node_idx);
+                std::size_t particle_start = particle_idxs[0];
+                std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
+                if (num_particles == 0) {
+                    continue;
                 }
-                if (acc_ctx == nullptr) {
-                    cuCtxGetCurrent(&acc_ctx);
-                }
-                if (acc_ctx != nullptr) {
-                    cuCtxSetCurrent(acc_ctx);
-                }
-                for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
-                    auto particle_idxs = target_tree_.node_particle_idxs(node_idx);
-                    std::size_t particle_start = particle_idxs[0];
-                    std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
-                    if (num_particles == 0) {
-                        continue;
-                    }
-                    source_term_down_cuda(
-                        elem_x_ptr, elem_y_ptr, elem_z_ptr,
-                        elem_q_dx_ptr, elem_q_dy_ptr, elem_q_dz_ptr,
-                        elem_clusters_x_ptr, elem_clusters_y_ptr, elem_clusters_z_ptr,
-                        elem_clusters_p_ptr, elem_clusters_p_dx_ptr,
-                        elem_clusters_p_dy_ptr, elem_clusters_p_dz_ptr,
-                        weights_ptr,
-                        node_idx,
-                        num_elem_interp_pts_per_node_,
-                        num_elem_interp_potentials_per_node_,
-                        particle_start,
-                        num_particles,
-                        source_term_ptr,
-                        source_term_offset_,
-                        stream);
-                }
+                source_term_down_cuda(
+                    elem_dev.x, elem_dev.y, elem_dev.z,
+                    elem_dev.nx, elem_dev.ny, elem_dev.nz,
+                    elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
+                    self_dev.p, self_dev.p_dx,
+                    self_dev.p_dy, self_dev.p_dz,
+                    self_dev.elem_weights,
+                    node_idx,
+                    num_elem_interp_pts_per_node_,
+                    num_elem_interp_potentials_per_node_,
+                    particle_start,
+                    num_particles,
+                    elem_dev.source_term,
+                    source_term_offset_,
+                    stream);
+                CUDA_CHECK_LAST_KERNEL();
             }
             #pragma acc wait(kSourceTermAsync)
             return;
@@ -1231,36 +1147,6 @@ void SourceTermCompute::copyin_clusters_to_device() const
                           cudaMemcpyHostToDevice, stream);
     }
 
-#ifdef OPENACC_ENABLED
-    CUDA_ACC_UNMAP_IF_PRESENT(q_ptr, q_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(p_ptr, p_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(p_dx_ptr, p_dx_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(p_dy_ptr, p_dy_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(p_dz_ptr, p_dz_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(mol_weights_ptr, mol_weights_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(elem_weights_ptr, elem_weights_num * sizeof(double));
-
-    CUDA_ACC_MAP_CONST(q_ptr, buf.q_dev, q_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(p_ptr, buf.p_dev, p_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(p_dx_ptr, buf.p_dx_dev, p_dx_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(p_dy_ptr, buf.p_dy_dev, p_dy_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(p_dz_ptr, buf.p_dz_dev, p_dz_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(mol_weights_ptr, buf.mol_weights_dev,
-                       mol_weights_num * sizeof(double));
-    CUDA_ACC_MAP_CONST(elem_weights_ptr, buf.elem_weights_dev,
-                       elem_weights_num * sizeof(double));
-    if (scratch_num > 0) {
-        CUDA_ACC_MAP_CONST(exact_idx_x_.data(), buf.exact_idx_x_dev,
-                           scratch_num * sizeof(int));
-        CUDA_ACC_MAP_CONST(exact_idx_y_.data(), buf.exact_idx_y_dev,
-                           scratch_num * sizeof(int));
-        CUDA_ACC_MAP_CONST(exact_idx_z_.data(), buf.exact_idx_z_dev,
-                           scratch_num * sizeof(int));
-        CUDA_ACC_MAP_CONST(denominator_.data(), buf.denominator_dev,
-                           scratch_num * sizeof(double));
-    }
-#endif
-
     CUDA_SYNC_AND_CHECK();
     buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
@@ -1325,30 +1211,6 @@ void SourceTermCompute::delete_clusters_from_device() const
 
 #ifdef USE_CUDA_CC
     auto &buf = device_buffers_;
-#ifdef OPENACC_ENABLED
-    const std::size_t q_num = mol_interp_charge_.size();
-    const std::size_t p_num = elem_interp_potential_.size();
-    const std::size_t p_dx_num = elem_interp_potential_dx_.size();
-    const std::size_t p_dy_num = elem_interp_potential_dy_.size();
-    const std::size_t p_dz_num = elem_interp_potential_dz_.size();
-    const std::size_t mol_weights_num = mol_weights_.size();
-    const std::size_t elem_weights_num = elem_weights_.size();
-    const std::size_t scratch_num = max_mol_particles_per_node_;
-
-    CUDA_ACC_UNMAP_IF_PRESENT(mol_interp_charge_.data(), q_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(elem_interp_potential_.data(), p_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(elem_interp_potential_dx_.data(), p_dx_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(elem_interp_potential_dy_.data(), p_dy_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(elem_interp_potential_dz_.data(), p_dz_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(mol_weights_.data(), mol_weights_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(elem_weights_.data(), elem_weights_num * sizeof(double));
-    if (scratch_num > 0) {
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_x_.data(), scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_y_.data(), scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(exact_idx_z_.data(), scratch_num * sizeof(int));
-        CUDA_ACC_UNMAP_IF_PRESENT(denominator_.data(), scratch_num * sizeof(double));
-    }
-#endif
     CUDA_FREE_AND_NULL(buf.q_dev);
     CUDA_FREE_AND_NULL(buf.p_dev);
     CUDA_FREE_AND_NULL(buf.p_dx_dev);
