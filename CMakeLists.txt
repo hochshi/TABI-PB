@@ -45,17 +45,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib)
 
 
 ################################################################################
-# OpenACC
-################################################################################
-option(ENABLE_OPENACC "OpenACC" OFF)
-
-if (ENABLE_OPENACC)
-    find_package(OpenACC REQUIRED)
-    set(OPENACC_ACCEL_TARGET tesla)
-    add_definitions(-DOPENACC_ENABLED)
-endif ()
-
-################################################################################
 # CUDA CC kernel
 ################################################################################
 option(ENABLE_CUDA_CC "CUDA CC kernel" OFF)
