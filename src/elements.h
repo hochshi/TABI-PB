@@ -158,6 +158,56 @@ public:
 #else
   bool cuda_device_ready() const { return false; }
 #endif
+
+  struct DeviceView {
+    bool ready = false;
+    double* x = nullptr;
+    double* y = nullptr;
+    double* z = nullptr;
+    double* nx = nullptr;
+    double* ny = nullptr;
+    double* nz = nullptr;
+    double* area = nullptr;
+    double* source_term = nullptr;
+    double* target_q = nullptr;
+    double* target_q_dx = nullptr;
+    double* target_q_dy = nullptr;
+    double* target_q_dz = nullptr;
+    double* source_q = nullptr;
+    double* source_q_dx = nullptr;
+    double* source_q_dy = nullptr;
+    double* source_q_dz = nullptr;
+    std::size_t num = 0;
+#ifdef USE_CUDA_CC
+    CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+  };
+
+  DeviceView device_view() const {
+    DeviceView view;
+#ifdef USE_CUDA_CC
+    view.ready = device_buffers_.ready;
+    view.x = device_buffers_.x;
+    view.y = device_buffers_.y;
+    view.z = device_buffers_.z;
+    view.nx = device_buffers_.nx;
+    view.ny = device_buffers_.ny;
+    view.nz = device_buffers_.nz;
+    view.area = device_buffers_.area;
+    view.source_term = device_buffers_.source_term;
+    view.target_q = device_buffers_.target_q;
+    view.target_q_dx = device_buffers_.target_q_dx;
+    view.target_q_dy = device_buffers_.target_q_dy;
+    view.target_q_dz = device_buffers_.target_q_dz;
+    view.source_q = device_buffers_.source_q;
+    view.source_q_dx = device_buffers_.source_q_dx;
+    view.source_q_dy = device_buffers_.source_q_dy;
+    view.source_q_dz = device_buffers_.source_q_dz;
+    view.num = device_buffers_.num;
+    view.state = device_state_;
+#endif
+    return view;
+  }
 };
 
 struct Timers_Elements {

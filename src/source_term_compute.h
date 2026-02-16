@@ -121,6 +121,61 @@ private:
 
     
 public:
+    struct DeviceView {
+        bool ready = false;
+        double* q = nullptr;
+        double* p = nullptr;
+        double* p_dx = nullptr;
+        double* p_dy = nullptr;
+        double* p_dz = nullptr;
+        double* mol_weights = nullptr;
+        double* elem_weights = nullptr;
+        int* exact_idx_x = nullptr;
+        int* exact_idx_y = nullptr;
+        int* exact_idx_z = nullptr;
+        double* denominator = nullptr;
+
+        std::size_t q_num = 0;
+        std::size_t p_num = 0;
+        std::size_t p_dx_num = 0;
+        std::size_t p_dy_num = 0;
+        std::size_t p_dz_num = 0;
+        std::size_t mol_weights_num = 0;
+        std::size_t elem_weights_num = 0;
+        std::size_t scratch_num = 0;
+#ifdef USE_CUDA_CC
+        CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+    };
+
+    DeviceView device_view() const {
+        DeviceView view;
+#ifdef USE_CUDA_CC
+        view.ready = device_buffers_.ready;
+        view.q = device_buffers_.q_dev;
+        view.p = device_buffers_.p_dev;
+        view.p_dx = device_buffers_.p_dx_dev;
+        view.p_dy = device_buffers_.p_dy_dev;
+        view.p_dz = device_buffers_.p_dz_dev;
+        view.mol_weights = device_buffers_.mol_weights_dev;
+        view.elem_weights = device_buffers_.elem_weights_dev;
+        view.exact_idx_x = device_buffers_.exact_idx_x_dev;
+        view.exact_idx_y = device_buffers_.exact_idx_y_dev;
+        view.exact_idx_z = device_buffers_.exact_idx_z_dev;
+        view.denominator = device_buffers_.denominator_dev;
+        view.q_num = device_buffers_.q_num;
+        view.p_num = device_buffers_.p_num;
+        view.p_dx_num = device_buffers_.p_dx_num;
+        view.p_dy_num = device_buffers_.p_dy_num;
+        view.p_dz_num = device_buffers_.p_dz_num;
+        view.mol_weights_num = device_buffers_.mol_weights_num;
+        view.elem_weights_num = device_buffers_.elem_weights_num;
+        view.scratch_num = device_buffers_.scratch_num;
+        view.state = device_state_;
+#endif
+        return view;
+    }
+
     SourceTermCompute(std::vector<double>& source_term,
                       class Elements& elements, const class InterpolationPoints& elem_interp_pts,
                       const class Tree& elem_tree,

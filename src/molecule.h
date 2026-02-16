@@ -57,6 +57,32 @@ public:
     const double* charge_ptr() const { return charge_.data(); };
     const double* radius_ptr() const { return radius_.data(); };
 
+    struct DeviceView {
+        bool ready = false;
+        double* particles_x = nullptr;
+        double* particles_y = nullptr;
+        double* particles_z = nullptr;
+        double* charge = nullptr;
+        std::size_t num_particles = 0;
+#ifdef USE_CUDA_CC
+        CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+    };
+
+    DeviceView device_view() const {
+        DeviceView view;
+#ifdef USE_CUDA_CC
+        view.ready = device_buffers_.ready;
+        view.particles_x = device_buffers_.particles_x_dev;
+        view.particles_y = device_buffers_.particles_y_dev;
+        view.particles_z = device_buffers_.particles_z_dev;
+        view.charge = device_buffers_.charge_dev;
+        view.num_particles = device_buffers_.num_particles;
+        view.state = device_state_;
+#endif
+        return view;
+    }
+
 #ifdef USE_CUDA_CC
     bool cuda_device_ready() const {
         return device_state_ == CudaDeviceState::DeviceMapped &&

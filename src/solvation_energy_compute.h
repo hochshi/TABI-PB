@@ -111,6 +111,54 @@ private:
 
     
 public:
+    struct DeviceView {
+        bool ready = false;
+        double* weights_up = nullptr;
+        double* weights_down = nullptr;
+        double* q = nullptr;
+        double* p = nullptr;
+        double* p_dx = nullptr;
+        double* p_dy = nullptr;
+        double* p_dz = nullptr;
+        double* solv_eng = nullptr;
+
+        std::size_t weights_up_num = 0;
+        std::size_t weights_down_num = 0;
+        std::size_t q_num = 0;
+        std::size_t p_num = 0;
+        std::size_t p_dx_num = 0;
+        std::size_t p_dy_num = 0;
+        std::size_t p_dz_num = 0;
+        std::size_t solv_eng_num = 0;
+#ifdef USE_CUDA_CC
+        CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+    };
+
+    DeviceView device_view() const {
+        DeviceView view;
+#ifdef USE_CUDA_CC
+        view.ready = device_buffers_.ready;
+        view.weights_up = device_buffers_.weights_up_dev;
+        view.weights_down = device_buffers_.weights_down_dev;
+        view.q = device_buffers_.q_dev;
+        view.p = device_buffers_.p_dev;
+        view.p_dx = device_buffers_.p_dx_dev;
+        view.p_dy = device_buffers_.p_dy_dev;
+        view.p_dz = device_buffers_.p_dz_dev;
+        view.solv_eng = device_buffers_.solv_eng_dev;
+        view.weights_up_num = device_buffers_.weights_up_num;
+        view.weights_down_num = device_buffers_.weights_down_num;
+        view.q_num = device_buffers_.q_num;
+        view.p_num = device_buffers_.p_num;
+        view.p_dx_num = device_buffers_.p_dx_num;
+        view.p_dy_num = device_buffers_.p_dy_num;
+        view.p_dz_num = device_buffers_.p_dz_num;
+        view.solv_eng_num = device_buffers_.solv_eng_num;
+        view.state = device_state_;
+#endif
+        return view;
+    }
 
     SolvationEnergyCompute(std::vector<double>& potential,
                       class Elements& elements, const class InterpolationPoints& elem_interp_pts,

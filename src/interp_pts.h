@@ -55,6 +55,30 @@ public:
     const double* interp_y_ptr() const { return interp_y_.data(); };
     const double* interp_z_ptr() const { return interp_z_.data(); };
 
+    struct DeviceView {
+        bool ready = false;
+        double* interp_x = nullptr;
+        double* interp_y = nullptr;
+        double* interp_z = nullptr;
+        std::size_t num_interp_pts = 0;
+#ifdef USE_CUDA_CC
+        CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+    };
+
+    DeviceView device_view() const {
+        DeviceView view;
+#ifdef USE_CUDA_CC
+        view.ready = device_buffers_.ready;
+        view.interp_x = device_buffers_.interp_x_dev;
+        view.interp_y = device_buffers_.interp_y_dev;
+        view.interp_z = device_buffers_.interp_z_dev;
+        view.num_interp_pts = device_buffers_.num_interp_pts;
+        view.state = device_state_;
+#endif
+        return view;
+    }
+
 #ifdef USE_CUDA_CC
     bool cuda_device_ready() const {
         return device_state_ == CudaDeviceState::DeviceMapped &&

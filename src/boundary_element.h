@@ -214,6 +214,108 @@ private:
 
     
 public:
+    struct DeviceView {
+        bool ready = false;
+        bool owns_clusters_xyz = true;
+        double* clusters_x = nullptr;
+        double* clusters_y = nullptr;
+        double* clusters_z = nullptr;
+        double* clusters_q = nullptr;
+        double* clusters_q_dx = nullptr;
+        double* clusters_q_dy = nullptr;
+        double* clusters_q_dz = nullptr;
+        double* clusters_p = nullptr;
+        double* clusters_p_dx = nullptr;
+        double* clusters_p_dy = nullptr;
+        double* clusters_p_dz = nullptr;
+        double* elements_x = nullptr;
+        double* elements_y = nullptr;
+        double* elements_z = nullptr;
+        double* elements_nx = nullptr;
+        double* elements_ny = nullptr;
+        double* elements_nz = nullptr;
+        double* elements_area = nullptr;
+        double* targets_q = nullptr;
+        double* targets_q_dx = nullptr;
+        double* targets_q_dy = nullptr;
+        double* targets_q_dz = nullptr;
+        double* sources_q = nullptr;
+        double* sources_q_dx = nullptr;
+        double* sources_q_dy = nullptr;
+        double* sources_q_dz = nullptr;
+        double* weights = nullptr;
+        double* potential_temp = nullptr;
+        std::uint32_t* node_begin = nullptr;
+        std::uint32_t* node_end = nullptr;
+        std::uint32_t* element_node_idx = nullptr;
+        std::uint32_t* pp_offsets = nullptr;
+        std::uint32_t* pp_sources = nullptr;
+        std::uint32_t* pc_offsets = nullptr;
+        std::uint32_t* pc_sources = nullptr;
+        std::uint32_t* cp_offsets = nullptr;
+        std::uint32_t* cp_sources = nullptr;
+        std::uint32_t* cc_offsets = nullptr;
+        std::uint32_t* cc_sources = nullptr;
+        std::size_t* level_nodes = nullptr;
+        std::size_t level_nodes_num = 0;
+        std::size_t num_nodes = 0;
+#ifdef USE_CUDA_CC
+        CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+    };
+
+    DeviceView device_view() const {
+        DeviceView view;
+#ifdef USE_CUDA_CC
+        view.ready = device_buffers_.ready;
+        view.owns_clusters_xyz = device_buffers_.owns_clusters_xyz;
+        view.clusters_x = device_buffers_.clusters_x;
+        view.clusters_y = device_buffers_.clusters_y;
+        view.clusters_z = device_buffers_.clusters_z;
+        view.clusters_q = device_buffers_.clusters_q;
+        view.clusters_q_dx = device_buffers_.clusters_q_dx;
+        view.clusters_q_dy = device_buffers_.clusters_q_dy;
+        view.clusters_q_dz = device_buffers_.clusters_q_dz;
+        view.clusters_p = device_buffers_.clusters_p;
+        view.clusters_p_dx = device_buffers_.clusters_p_dx;
+        view.clusters_p_dy = device_buffers_.clusters_p_dy;
+        view.clusters_p_dz = device_buffers_.clusters_p_dz;
+        view.elements_x = device_buffers_.elements_x;
+        view.elements_y = device_buffers_.elements_y;
+        view.elements_z = device_buffers_.elements_z;
+        view.elements_nx = device_buffers_.elements_nx;
+        view.elements_ny = device_buffers_.elements_ny;
+        view.elements_nz = device_buffers_.elements_nz;
+        view.elements_area = device_buffers_.elements_area;
+        view.targets_q = device_buffers_.targets_q;
+        view.targets_q_dx = device_buffers_.targets_q_dx;
+        view.targets_q_dy = device_buffers_.targets_q_dy;
+        view.targets_q_dz = device_buffers_.targets_q_dz;
+        view.sources_q = device_buffers_.sources_q;
+        view.sources_q_dx = device_buffers_.sources_q_dx;
+        view.sources_q_dy = device_buffers_.sources_q_dy;
+        view.sources_q_dz = device_buffers_.sources_q_dz;
+        view.weights = device_buffers_.weights;
+        view.potential_temp = device_buffers_.potential_temp;
+        view.node_begin = device_buffers_.node_begin;
+        view.node_end = device_buffers_.node_end;
+        view.element_node_idx = device_buffers_.element_node_idx;
+        view.pp_offsets = device_buffers_.pp_offsets;
+        view.pp_sources = device_buffers_.pp_sources;
+        view.pc_offsets = device_buffers_.pc_offsets;
+        view.pc_sources = device_buffers_.pc_sources;
+        view.cp_offsets = device_buffers_.cp_offsets;
+        view.cp_sources = device_buffers_.cp_sources;
+        view.cc_offsets = device_buffers_.cc_offsets;
+        view.cc_sources = device_buffers_.cc_sources;
+        view.level_nodes = device_buffers_.level_nodes;
+        view.level_nodes_num = device_buffers_.level_nodes_num;
+        view.num_nodes = device_buffers_.num_nodes;
+        view.state = device_state_;
+#endif
+        return view;
+    }
+
     BoundaryElement(class Elements& elements, const class InterpolationPoints& interp_pts,
              const class Tree& tree, const class InteractionList& interaction_list,
              const class Molecule& molecule, const struct Params& params, class Output& output,

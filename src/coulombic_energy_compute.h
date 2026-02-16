@@ -97,6 +97,49 @@ private:
 
     
 public:
+    struct DeviceView {
+        bool ready = false;
+        double* q = nullptr;
+        double* p = nullptr;
+        double* coul_eng = nullptr;
+        double* weights = nullptr;
+        int* exact_idx_x = nullptr;
+        int* exact_idx_y = nullptr;
+        int* exact_idx_z = nullptr;
+        double* denominator = nullptr;
+
+        std::size_t q_num = 0;
+        std::size_t p_num = 0;
+        std::size_t coul_eng_num = 0;
+        std::size_t weights_num = 0;
+        std::size_t scratch_num = 0;
+#ifdef USE_CUDA_CC
+        CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+    };
+
+    DeviceView device_view() const {
+        DeviceView view;
+#ifdef USE_CUDA_CC
+        view.ready = device_buffers_.ready;
+        view.q = device_buffers_.q_dev;
+        view.p = device_buffers_.p_dev;
+        view.coul_eng = device_buffers_.coul_eng_dev;
+        view.weights = device_buffers_.weights_dev;
+        view.exact_idx_x = device_buffers_.exact_idx_x_dev;
+        view.exact_idx_y = device_buffers_.exact_idx_y_dev;
+        view.exact_idx_z = device_buffers_.exact_idx_z_dev;
+        view.denominator = device_buffers_.denominator_dev;
+        view.q_num = device_buffers_.q_num;
+        view.p_num = device_buffers_.p_num;
+        view.coul_eng_num = device_buffers_.coul_eng_num;
+        view.weights_num = device_buffers_.weights_num;
+        view.scratch_num = device_buffers_.scratch_num;
+        view.state = device_state_;
+#endif
+        return view;
+    }
+
 
     CoulombicEnergyCompute(const class Molecule& molecule, const class InterpolationPoints& mol_interp_pts,
                       const class Tree& mol_tree, const class InteractionList& interaction_list,

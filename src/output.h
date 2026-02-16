@@ -69,6 +69,26 @@ public:
     void set_num_iter(long int num_iter) { num_iter_ = num_iter; }
     void set_residual(double residual) { residual_ = residual; }
 
+    struct DeviceView {
+        bool ready = false;
+        double* potential = nullptr;
+        std::size_t potential_num = 0;
+#ifdef USE_CUDA_CC
+        CudaDeviceState state = CudaDeviceState::HostOnly;
+#endif
+    };
+
+    DeviceView device_view() const {
+        DeviceView view;
+#ifdef USE_CUDA_CC
+        view.ready = device_buffers_.ready;
+        view.potential = device_buffers_.potential_dev;
+        view.potential_num = device_buffers_.potential_num;
+        view.state = device_state_;
+#endif
+        return view;
+    }
+
 #ifdef USE_CUDA_CC
     bool cuda_device_ready() const {
         return device_state_ == CudaDeviceState::DeviceMapped &&
