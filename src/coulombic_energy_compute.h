@@ -9,6 +9,7 @@
 #ifdef USE_CUDA_CC
 #include "cuda_state.h"
 #endif
+
 //struct Timers;
 
 class CoulombicEnergyCompute : public TreeCompute
@@ -38,12 +39,6 @@ private:
     mutable std::vector<int> exact_idx_y_;
     mutable std::vector<int> exact_idx_z_;
     mutable std::vector<double> denominator_;
-    
-    
-    /* Coulombic energy */
-   
-    mutable std::vector<double> coul_eng_vec_; 
-    double coulombic_energy_;
 
 #ifdef USE_CUDA_CC
     class DeviceBuffers {
@@ -69,6 +64,12 @@ private:
     mutable DeviceBuffers device_buffers_;
     mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
 #endif
+    
+    
+    /* Coulombic energy */
+   
+    mutable std::vector<double> coul_eng_vec_; 
+    double coulombic_energy_;
     
     
     void particle_particle_interact(std::array<std::size_t, 2> target_node_particle_idxs,
