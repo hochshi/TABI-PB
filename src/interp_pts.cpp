@@ -144,21 +144,6 @@ void InterpolationPoints::copyin_to_device() const
         buf.num_interp_pts = num_interp_pts;
     }
 
-#ifdef OPENACC_ENABLED
-    const double* x_ptr = interp_x_.data();
-    const double* y_ptr = interp_y_.data();
-    const double* z_ptr = interp_z_.data();
-    const std::size_t bytes = num_interp_pts * sizeof(double);
-
-    CUDA_ACC_UNMAP_IF_PRESENT(x_ptr, bytes);
-    CUDA_ACC_UNMAP_IF_PRESENT(y_ptr, bytes);
-    CUDA_ACC_UNMAP_IF_PRESENT(z_ptr, bytes);
-
-    CUDA_ACC_MAP_CONST(x_ptr, buf.interp_x_dev, bytes);
-    CUDA_ACC_MAP_CONST(y_ptr, buf.interp_y_dev, bytes);
-    CUDA_ACC_MAP_CONST(z_ptr, buf.interp_z_dev, bytes);
-#endif
-
     CUDA_SYNC_AND_CHECK();
     buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
@@ -193,13 +178,6 @@ void InterpolationPoints::delete_from_device() const
 
 #ifdef USE_CUDA_CC
     auto &buf = device_buffers_;
-#ifdef OPENACC_ENABLED
-    const std::size_t num_interp_pts = num_interp_pts_;
-    const std::size_t bytes = num_interp_pts * sizeof(double);
-    CUDA_ACC_UNMAP_IF_PRESENT(interp_x_.data(), bytes);
-    CUDA_ACC_UNMAP_IF_PRESENT(interp_y_.data(), bytes);
-    CUDA_ACC_UNMAP_IF_PRESENT(interp_z_.data(), bytes);
-#endif
     CUDA_FREE_AND_NULL(buf.interp_x_dev);
     CUDA_FREE_AND_NULL(buf.interp_y_dev);
     CUDA_FREE_AND_NULL(buf.interp_z_dev);

@@ -153,16 +153,6 @@ void Molecule::copyin_to_device() const {
   }
 
 #ifdef OPENACC_ENABLED
-  CUDA_ACC_UNMAP_IF_PRESENT(x_.data(), x_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(y_.data(), y_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(z_.data(), z_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(charge_.data(), charge_num * sizeof(double));
-
-  CUDA_ACC_MAP_CONST(x_.data(), buf.particles_x_dev, x_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(y_.data(), buf.particles_y_dev, y_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(z_.data(), buf.particles_z_dev, z_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(charge_.data(), buf.charge_dev,
-                     charge_num * sizeof(double));
 #endif
 
   CUDA_SYNC_AND_CHECK();
@@ -201,17 +191,6 @@ void Molecule::delete_from_device() const {
 
 #ifdef USE_CUDA_CC
   auto &buf = device_buffers_;
-#ifdef OPENACC_ENABLED
-  const std::size_t x_num = x_.size();
-  const std::size_t y_num = y_.size();
-  const std::size_t z_num = z_.size();
-  const std::size_t charge_num = charge_.size();
-
-  CUDA_ACC_UNMAP_IF_PRESENT(x_.data(), x_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(y_.data(), y_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(z_.data(), z_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(charge_.data(), charge_num * sizeof(double));
-#endif
   CUDA_FREE_AND_NULL(buf.particles_x_dev);
   CUDA_FREE_AND_NULL(buf.particles_y_dev);
   CUDA_FREE_AND_NULL(buf.particles_z_dev);

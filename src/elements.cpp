@@ -795,49 +795,6 @@ void Elements::copyin_to_device() const {
                       cudaMemcpyHostToDevice, stream);
   }
 
-#ifdef OPENACC_ENABLED
-  CUDA_ACC_UNMAP_IF_PRESENT(x_.data(), x_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(y_.data(), y_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(z_.data(), z_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(nx_.data(), nx_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(ny_.data(), ny_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(nz_.data(), nz_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(area_.data(), area_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(source_term_.data(), source_term_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_.data(), tq_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dx_.data(), tq_dx_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dy_.data(), tq_dy_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dz_.data(), tq_dz_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_.data(), sq_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dx_.data(), sq_dx_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dy_.data(), sq_dy_num * sizeof(double));
-  CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dz_.data(), sq_dz_num * sizeof(double));
-
-  CUDA_ACC_MAP_CONST(x_.data(), ptrs.x, x_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(y_.data(), ptrs.y, y_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(z_.data(), ptrs.z, z_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(nx_.data(), ptrs.nx, nx_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(ny_.data(), ptrs.ny, ny_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(nz_.data(), ptrs.nz, nz_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(area_.data(), ptrs.area, area_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(source_term_.data(), ptrs.source_term,
-                     source_term_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(target_charge_.data(), ptrs.target_q, tq_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(target_charge_dx_.data(), ptrs.target_q_dx,
-                     tq_dx_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(target_charge_dy_.data(), ptrs.target_q_dy,
-                     tq_dy_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(target_charge_dz_.data(), ptrs.target_q_dz,
-                     tq_dz_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(source_charge_.data(), ptrs.source_q, sq_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(source_charge_dx_.data(), ptrs.source_q_dx,
-                     sq_dx_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(source_charge_dy_.data(), ptrs.source_q_dy,
-                     sq_dy_num * sizeof(double));
-  CUDA_ACC_MAP_CONST(source_charge_dz_.data(), ptrs.source_q_dz,
-                     sq_dz_num * sizeof(double));
-#endif
-
   CUDA_SYNC_AND_CHECK();
   device_state_ = CudaDeviceState::DeviceMapped;
 
@@ -938,41 +895,6 @@ void Elements::delete_from_device() const {
 
 #ifdef USE_CUDA_CC
   if (device_buffers_.ready) {
-#ifdef OPENACC_ENABLED
-    const std::size_t x_num = x_.size();
-    const std::size_t y_num = y_.size();
-    const std::size_t z_num = z_.size();
-    const std::size_t nx_num = nx_.size();
-    const std::size_t ny_num = ny_.size();
-    const std::size_t nz_num = nz_.size();
-    const std::size_t area_num = area_.size();
-    const std::size_t source_term_num = source_term_.size();
-    const std::size_t tq_num = target_charge_.size();
-    const std::size_t tq_dx_num = target_charge_dx_.size();
-    const std::size_t tq_dy_num = target_charge_dy_.size();
-    const std::size_t tq_dz_num = target_charge_dz_.size();
-    const std::size_t sq_num = source_charge_.size();
-    const std::size_t sq_dx_num = source_charge_dx_.size();
-    const std::size_t sq_dy_num = source_charge_dy_.size();
-    const std::size_t sq_dz_num = source_charge_dz_.size();
-
-    CUDA_ACC_UNMAP_IF_PRESENT(x_.data(), x_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(y_.data(), y_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(z_.data(), z_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(nx_.data(), nx_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(ny_.data(), ny_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(nz_.data(), nz_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(area_.data(), area_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(source_term_.data(), source_term_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_.data(), tq_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dx_.data(), tq_dx_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dy_.data(), tq_dy_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(target_charge_dz_.data(), tq_dz_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_.data(), sq_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dx_.data(), sq_dx_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dy_.data(), sq_dy_num * sizeof(double));
-    CUDA_ACC_UNMAP_IF_PRESENT(source_charge_dz_.data(), sq_dz_num * sizeof(double));
-#endif
     CUDA_FREE_AND_NULL(device_buffers_.x);
     CUDA_FREE_AND_NULL(device_buffers_.y);
     CUDA_FREE_AND_NULL(device_buffers_.z);
