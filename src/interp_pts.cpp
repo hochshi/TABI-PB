@@ -14,10 +14,6 @@
 #include "interp_pts_cuda.h"
 #endif
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
-
 InterpolationPoints::InterpolationPoints(const class Tree& tree, int degree)
     : tree_(tree)
 {
@@ -78,9 +74,6 @@ void InterpolationPoints::compute_all_interp_pts()
         CUDA_MALLOC_OR_DIE(&bounds_dev, bounds.size() * sizeof(double));
 
         cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-        stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
 
         CUDA_MEMCPY_ASYNC(bounds_dev, bounds.data(),
                           bounds.size() * sizeof(double),

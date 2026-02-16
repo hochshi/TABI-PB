@@ -10,10 +10,6 @@
 #include "solvation_energy_cuda.h"
 #endif
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
-
 #include "constants.h"
 #include "solvation_energy_compute.h"
 
@@ -152,7 +148,7 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
                                 mol_dev.particles_z && mol_dev.charge &&
                                 self_dev.solv_eng && potential_dev;
         if (present_ok) {
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             solvation_pp_cuda(elem_dev.x, elem_dev.y, elem_dev.z,
                               elem_dev.nx, elem_dev.ny, elem_dev.nz,
                               elem_dev.area,
@@ -278,7 +274,7 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
                                 mol_interp_dev.interp_z &&
                                 self_dev.q && self_dev.solv_eng && potential_dev;
         if (present_ok) {
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             solvation_pc_cuda(elem_dev.x, elem_dev.y, elem_dev.z,
                               elem_dev.nx, elem_dev.ny, elem_dev.nz,
                               elem_dev.area,
@@ -408,7 +404,7 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
                                 self_dev.p && self_dev.p_dx &&
                                 self_dev.p_dy && self_dev.p_dz;
         if (present_ok) {
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             solvation_cp_cuda(mol_dev.particles_x, mol_dev.particles_y,
                               mol_dev.particles_z, mol_dev.charge,
                               elem_interp_dev.interp_x, elem_interp_dev.interp_y,
@@ -544,7 +540,7 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
                                 self_dev.p && self_dev.p_dx &&
                                 self_dev.p_dy && self_dev.p_dz;
         if (present_ok) {
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             solvation_cc_cuda(mol_interp_dev.interp_x, mol_interp_dev.interp_y,
                               mol_interp_dev.interp_z,
                               self_dev.q,
@@ -681,9 +677,6 @@ void SolvationEnergyCompute::upward_pass()
     }
 
     cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
     if (weights_num > 0 && buf.weights_up_dev) {
         CUDA_MEMCPY_ASYNC(buf.weights_up_dev, weights_ptr, weights_bytes,
                           cudaMemcpyHostToDevice, stream);
@@ -711,7 +704,7 @@ void SolvationEnergyCompute::upward_pass()
                 if (num_particles > max_particles) max_particles = num_particles;
             }
             if (max_particles > 0) {
-                void* stream = acc_get_cuda_stream(acc_async_sync);
+                void* stream = nullptr;
                 int* exact_idx_x_dev = nullptr;
                 int* exact_idx_y_dev = nullptr;
                 int* exact_idx_z_dev = nullptr;
@@ -742,7 +735,7 @@ void SolvationEnergyCompute::upward_pass()
                         stream);
                     CUDA_CHECK_LAST_KERNEL();
                 }
-                acc_wait(acc_async_sync);
+                CUDA_SYNC_AND_CHECK();
                 CUDA_FREE_AND_NULL(exact_idx_x_dev);
                 CUDA_FREE_AND_NULL(exact_idx_y_dev);
                 CUDA_FREE_AND_NULL(exact_idx_z_dev);
@@ -959,9 +952,6 @@ void SolvationEnergyCompute::downward_pass()
     }
 
     cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
     if (weights_num > 0 && buf.weights_down_dev) {
         CUDA_MEMCPY_ASYNC(buf.weights_down_dev, weights_ptr, weights_bytes,
                           cudaMemcpyHostToDevice, stream);
@@ -987,7 +977,7 @@ void SolvationEnergyCompute::downward_pass()
                                 self_dev.solv_eng && self_dev.weights_down &&
                                 potential_dev;
         if (present_ok) {
-            void* stream = acc_get_cuda_stream(acc_async_sync);
+            void* stream = nullptr;
             for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
                 auto particle_idxs = target_tree_.node_particle_idxs(node_idx);
                 std::size_t particle_start = particle_idxs[0];
@@ -1012,7 +1002,7 @@ void SolvationEnergyCompute::downward_pass()
                     stream);
                 CUDA_CHECK_LAST_KERNEL();
             }
-            acc_wait(acc_async_sync);
+            CUDA_SYNC_AND_CHECK();
             #ifdef USE_CUDA_CC
             if (buf.weights_down_dev) {
                 CUDA_FREE_AND_NULL(buf.weights_down_dev);
@@ -1287,9 +1277,6 @@ void SolvationEnergyCompute::copyin_clusters_to_device() const
     }
 
     cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
     if (q_num > 0 && buf.q_dev) {
         CUDA_MEMCPY_ASYNC(buf.q_dev, q_ptr, q_num * sizeof(double),
                           cudaMemcpyHostToDevice, stream);
@@ -1381,9 +1368,6 @@ void SolvationEnergyCompute::delete_clusters_from_device() const
     auto &buf = device_buffers_;
     if (buf.ready) {
         cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-        stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
         if (solv_eng_num > 0 && buf.solv_eng_dev) {
             CUDA_MEMCPY_ASYNC(solv_eng_vec_.data(), buf.solv_eng_dev,
                               solv_eng_num * sizeof(double),

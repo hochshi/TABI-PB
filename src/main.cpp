@@ -13,27 +13,14 @@
 #include "tree.h"
 
 #ifdef USE_CUDA_CC
-#include <openacc.h>
-#include <cuda.h>
+#include "cuda_helpers.h"
 #endif
 
 int main(int argc, char *argv[]) {
 #ifdef USE_CUDA_CC
-  // Force OpenACC to use the NVIDIA device before any allocations.
-  acc_set_device_type(acc_device_nvidia);
-  acc_set_device_num(0, acc_device_nvidia);
-  acc_init(acc_device_nvidia);
-  // Ensure CUDA primary context is created before any OpenACC allocations.
-  if (cuInit(0) == CUDA_SUCCESS) {
-    CUdevice dev = 0;
-    if (cuDeviceGet(&dev, 0) == CUDA_SUCCESS) {
-      CUcontext ctx = nullptr;
-      cuDevicePrimaryCtxRetain(&ctx, dev);
-      if (ctx) {
-        cuCtxSetCurrent(ctx);
-      }
-    }
-  }
+  // Initialize CUDA runtime/context before any module allocations.
+  CUDA_CHECK(cudaSetDevice(0));
+  CUDA_CHECK(cudaFree(nullptr));
 #endif
   // set the parameter struct, which is read in from file provided as argv
   if (argc < 2) {

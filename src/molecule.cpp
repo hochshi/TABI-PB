@@ -17,10 +17,6 @@
 #include "cuda_helpers.h"
 #endif
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
-
 Molecule::Molecule(struct Params &params, struct Timers_Molecule &timers)
     : Particles(params), timers_(timers) {
   timers_.ctor.start();
@@ -136,9 +132,6 @@ void Molecule::copyin_to_device() const {
   }
 
   cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-  stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
 
   if (num_particles > 0) {
     CUDA_MEMCPY_ASYNC(buf.particles_x_dev, x_.data(),

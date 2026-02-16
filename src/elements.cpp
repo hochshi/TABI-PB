@@ -25,10 +25,6 @@
 #include "elements_cuda.h"
 #endif
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
-
 static double triangle_area(std::array<std::array<double, 3>, 3> v);
 
 Elements::Elements(const class Molecule &mol, const struct Params &params,
@@ -444,9 +440,6 @@ void Elements::compute_source_term() {
                            mol_view.particles_z && mol_view.charge;
       if (view_ok) {
         cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-        stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
         elements_compute_source_term_cuda(elem_view.x, elem_view.y, elem_view.z,
                                           elem_view.nx, elem_view.ny, elem_view.nz,
                                           mol_view.particles_x, mol_view.particles_y,
@@ -607,9 +600,6 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
                            elem_view.source_q_dz;
       if (view_ok) {
         cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-        stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
         elements_compute_charges_cuda(elem_view.nx, elem_view.ny, elem_view.nz,
                                       elem_view.area, potential_ptr,
                                       elem_view.target_q, elem_view.target_q_dx,
@@ -771,9 +761,6 @@ void Elements::copyin_to_device() const {
   }
 
   cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-  stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
-#endif
 
   if (num > 0) {
     CUDA_MEMCPY_ASYNC(ptrs.x, x_.data(), x_num * sizeof(double),
@@ -869,7 +856,7 @@ void Elements::copyin_to_device() const {
 }
 
 void Elements::update_source_term_on_host() {
-#if defined(USE_CUDA_CC) && defined(OPENACC_ENABLED)
+#ifdef USE_CUDA_CC
   const std::size_t source_term_num = source_term_.size();
   if (device_state_ != CudaDeviceState::DeviceMapped ||
       !device_buffers_.ready || source_term_num == 0 ||
@@ -877,7 +864,6 @@ void Elements::update_source_term_on_host() {
     return;
   }
   cudaStream_t stream = nullptr;
-  stream = static_cast<cudaStream_t>(acc_get_cuda_stream(acc_async_sync));
   CUDA_MEMCPY_ASYNC(source_term_.data(), device_buffers_.source_term,
                     source_term_num * sizeof(double),
                     cudaMemcpyDeviceToHost, stream);

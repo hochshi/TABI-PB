@@ -5,9 +5,6 @@
 #include <vector>
 #include <iostream>
 
-#ifdef OPENACC_ENABLED
-#include <openacc.h>
-#endif
 #ifdef USE_CUDA_CC
 #include "source_term_cuda.h"
 #endif
@@ -19,11 +16,6 @@
 #ifdef USE_CUDA_CC
 #include "cuda_helpers.h"
 #endif
-
-namespace {
-constexpr int kSourceTermAsync = 7;
-}
-
 
 SourceTermCompute::SourceTermCompute(std::vector<double>& source_term,
                       class Elements& elements, const class InterpolationPoints& elem_interp_pts,
@@ -158,7 +150,7 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
         if (present_ok) {
             const auto elem_dev = elements_.device_view();
             const auto mol_dev = molecule_.device_view();
-            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            void* stream = nullptr;
             source_term_pp_cuda(
                 elem_dev.x, elem_dev.y, elem_dev.z,
                 elem_dev.nx, elem_dev.ny, elem_dev.nz,
@@ -266,7 +258,7 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
             const auto elem_dev = elements_.device_view();
             const auto mol_interp_dev = mol_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            void* stream = nullptr;
             source_term_pc_cuda(
                 elem_dev.x, elem_dev.y, elem_dev.z,
                 elem_dev.nx, elem_dev.ny, elem_dev.nz,
@@ -380,7 +372,7 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
             const auto elem_interp_dev = elem_interp_pts_.device_view();
             const auto mol_dev = molecule_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            void* stream = nullptr;
             source_term_cp_cuda(
                 elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
                 self_dev.p, self_dev.p_dx,
@@ -503,7 +495,7 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
             const auto elem_interp_dev = elem_interp_pts_.device_view();
             const auto mol_interp_dev = mol_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            void* stream = nullptr;
             source_term_cc_cuda(
                 elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
                 self_dev.p, self_dev.p_dx,
@@ -625,7 +617,7 @@ void SourceTermCompute::upward_pass()
             const auto mol_dev = molecule_.device_view();
             const auto mol_interp_dev = mol_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            void* stream = nullptr;
             for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
                 auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
                 std::size_t particle_start = particle_idxs[0];
@@ -648,7 +640,7 @@ void SourceTermCompute::upward_pass()
                     stream);
                 CUDA_CHECK_LAST_KERNEL();
             }
-            #pragma acc wait(kSourceTermAsync)
+            CUDA_SYNC_AND_CHECK();
             return;
         }
     }
@@ -813,7 +805,7 @@ void SourceTermCompute::downward_pass()
             const auto elem_dev = elements_.device_view();
             const auto elem_interp_dev = elem_interp_pts_.device_view();
             const auto self_dev = device_view();
-            void* stream = acc_get_cuda_stream(kSourceTermAsync);
+            void* stream = nullptr;
             for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
                 auto particle_idxs = target_tree_.node_particle_idxs(node_idx);
                 std::size_t particle_start = particle_idxs[0];
@@ -838,7 +830,7 @@ void SourceTermCompute::downward_pass()
                     stream);
                 CUDA_CHECK_LAST_KERNEL();
             }
-            #pragma acc wait(kSourceTermAsync)
+            CUDA_SYNC_AND_CHECK();
             return;
         }
     }
@@ -1112,9 +1104,6 @@ void SourceTermCompute::copyin_clusters_to_device() const
     }
 
     cudaStream_t stream = nullptr;
-#ifdef OPENACC_ENABLED
-    stream = static_cast<cudaStream_t>(acc_get_cuda_stream(kSourceTermAsync));
-#endif
 
     if (q_num > 0) {
         CUDA_MEMCPY_ASYNC(buf.q_dev, q_ptr, q_num * sizeof(double),
