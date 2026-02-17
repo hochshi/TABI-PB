@@ -37,6 +37,12 @@ private:
 
     mutable DeviceBuffers device_buffers_;
     mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+    bool validate_device_buffers_compute_interp_pts_() const;
+    bool try_compute_all_interp_pts_cuda_(const double* node_bounds,
+                                          std::size_t num_nodes,
+                                          int num_interp_pts_per_node) const;
+    void copyin_to_device_cuda_() const;
+    void delete_from_device_cuda_() const;
 #endif
     
     
@@ -55,7 +61,7 @@ public:
     const double* interp_y_ptr() const { return interp_y_.data(); };
     const double* interp_z_ptr() const { return interp_z_.data(); };
 
-    struct DeviceView {
+    struct View {
         bool ready = false;
         double* interp_x = nullptr;
         double* interp_y = nullptr;
@@ -65,9 +71,10 @@ public:
         CudaDeviceState state = CudaDeviceState::HostOnly;
 #endif
     };
+    using DeviceView = View;
 
-    DeviceView device_view() const {
-        DeviceView view;
+    View device_view() const {
+        View view;
 #ifdef USE_CUDA_CC
         view.ready = device_buffers_.ready;
         view.interp_x = device_buffers_.interp_x_dev;
@@ -75,6 +82,19 @@ public:
         view.interp_z = device_buffers_.interp_z_dev;
         view.num_interp_pts = device_buffers_.num_interp_pts;
         view.state = device_state_;
+#endif
+        return view;
+    }
+
+    View host_view() {
+        View view;
+        view.ready = true;
+        view.interp_x = interp_x_.data();
+        view.interp_y = interp_y_.data();
+        view.interp_z = interp_z_.data();
+        view.num_interp_pts = num_interp_pts_;
+#ifdef USE_CUDA_CC
+        view.state = CudaDeviceState::HostOnly;
 #endif
         return view;
     }

@@ -11,17 +11,10 @@
 #include "params.h"
 #include "tabipb_timers.h"
 #include "tree.h"
-
-#ifdef USE_CUDA_CC
-#include "cuda_helpers.h"
-#endif
+#include "main_backend.h"
 
 int main(int argc, char *argv[]) {
-#ifdef USE_CUDA_CC
-  // Initialize CUDA runtime/context before any module allocations.
-  CUDA_CHECK(cudaSetDevice(0));
-  CUDA_CHECK(cudaFree(nullptr));
-#endif
+  main_backend_initialize_runtime();
   // set the parameter struct, which is read in from file provided as argv
   if (argc < 2) {
     std::cout << "No input file set. Exiting." << std::endl;

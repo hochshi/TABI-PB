@@ -1,5 +1,8 @@
 # CXX code for standalone
 add_executable(tabipb main.cpp
+        main_backend.h
+        main_backend_cpu.cpp
+        main_backend_cuda.cpp
         params.cpp params.h
         particles.cpp particles.h
         molecule.cpp molecule.h
@@ -10,6 +13,8 @@ add_executable(tabipb main.cpp
         elements_backend_cuda.h elements_backend_cuda.cpp
         tree.cpp tree.h
         interp_pts.cpp interp_pts.h
+        interp_pts_backend_cpu.h interp_pts_backend_cpu.cpp
+        interp_pts_backend_cuda.cpp
         interaction_list.cpp interaction_list.h
         tree_compute.h
         coulombic_energy_compute.cpp coulombic_energy_compute.h
@@ -82,8 +87,12 @@ if (ENABLE_TABIPB_APBS)
     option(BUILD_SHARED_LIBS "Build shared libraries." OFF)
   
     set(LIBFILES
+        main_backend.h
+        main_backend_cpu.cpp
+        main_backend_cuda.cpp
         params.cpp params.h particles.cpp particles.h 
         molecule.cpp molecule.h molecule_backend_cuda.cpp elements.cpp elements.h tree.cpp tree.h
+        interp_pts.cpp interp_pts.h interp_pts_backend_cpu.h interp_pts_backend_cpu.cpp interp_pts_backend_cuda.cpp
         elements_backend_common.h
         elements_backend_cpu.h elements_backend_cpu.cpp
         elements_backend_cuda.h elements_backend_cuda.cpp
