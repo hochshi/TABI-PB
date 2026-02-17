@@ -57,7 +57,7 @@ public:
     const double* charge_ptr() const { return charge_.data(); };
     const double* radius_ptr() const { return radius_.data(); };
 
-    struct DeviceView {
+    struct View {
         bool ready = false;
         const double* particles_x = nullptr;
         const double* particles_y = nullptr;
@@ -68,10 +68,10 @@ public:
         CudaDeviceState state = CudaDeviceState::HostOnly;
 #endif
     };
-    using View = DeviceView;
+    using DeviceView = View;
 
-    DeviceView device_view() const {
-        DeviceView view;
+    View device_view() const {
+        View view;
 #ifdef USE_CUDA_CC
         view.ready = device_buffers_.ready;
         view.particles_x = device_buffers_.particles_x_dev;
@@ -84,8 +84,8 @@ public:
         return view;
     }
 
-    DeviceView host_view() const {
-        DeviceView view;
+    View host_view() const {
+        View view;
         view.ready = true;
         view.particles_x = x_.data();
         view.particles_y = y_.data();

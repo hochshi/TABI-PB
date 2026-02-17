@@ -140,6 +140,9 @@ private:
   void reset_device_buffers_() const;
   bool validate_device_buffers_compute_source_term_() const;
   bool validate_device_buffers_compute_charges_() const;
+  void copyin_to_device_cuda_() const;
+  void delete_from_device_cuda_() const;
+  void update_source_term_on_host_cuda_();
 #endif
 
 #ifdef USE_CUDA_CC
@@ -156,15 +159,15 @@ public:
   bool cuda_device_ready() const { return false; }
 #endif
 
-  struct DeviceView {
+  struct View {
     bool ready = false;
-    double* x = nullptr;
-    double* y = nullptr;
-    double* z = nullptr;
-    double* nx = nullptr;
-    double* ny = nullptr;
-    double* nz = nullptr;
-    double* area = nullptr;
+    const double* x = nullptr;
+    const double* y = nullptr;
+    const double* z = nullptr;
+    const double* nx = nullptr;
+    const double* ny = nullptr;
+    const double* nz = nullptr;
+    const double* area = nullptr;
     double* source_term = nullptr;
     double* target_q = nullptr;
     double* target_q_dx = nullptr;
@@ -179,10 +182,10 @@ public:
     CudaDeviceState state = CudaDeviceState::HostOnly;
 #endif
   };
-  using View = DeviceView;
+  using DeviceView = View;
 
-  DeviceView device_view() const {
-    DeviceView view;
+  View device_view() const {
+    View view;
 #ifdef USE_CUDA_CC
     view.ready = device_buffers_.ready;
     view.x = device_buffers_.x;
@@ -207,8 +210,8 @@ public:
     return view;
   }
 
-  DeviceView host_view() {
-    DeviceView view;
+  View host_view() {
+    View view;
     view.ready = true;
     view.x = x_.data();
     view.y = y_.data();
