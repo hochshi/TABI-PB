@@ -19,6 +19,9 @@ add_executable(tabipb main.cpp
         interaction_list.cpp interaction_list.h
         tree_compute.cpp tree_compute.h
         coulombic_energy_compute.cpp coulombic_energy_compute.h
+        coulombic_backend_common.h
+        coulombic_backend_cpu.h coulombic_backend_cpu.cpp
+        coulombic_backend_cuda.h
         coulombic_backend_cuda.cpp
         solvation_energy_compute.cpp solvation_energy_compute.h
         solvation_backend_cuda.cpp
@@ -105,6 +108,9 @@ if (ENABLE_TABIPB_APBS)
         elements_backend_cuda.h elements_backend_cuda.cpp
         interaction_list.cpp interaction_list.h tree_compute.cpp tree_compute.h
         coulombic_energy_compute.cpp coulombic_energy_compute.h
+        coulombic_backend_common.h
+        coulombic_backend_cpu.h coulombic_backend_cpu.cpp
+        coulombic_backend_cuda.h
         coulombic_backend_cuda.cpp
         solvation_energy_compute.cpp solvation_energy_compute.h
         solvation_backend_cuda.cpp

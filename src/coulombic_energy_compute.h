@@ -69,19 +69,6 @@ private:
     bool validate_device_buffers_cluster_particle_() const;
     bool validate_device_buffers_cluster_cluster_() const;
     bool validate_device_buffers_upward_pass_() const;
-    bool try_particle_particle_interact_cuda_(std::size_t target_node_begin,
-                                              std::size_t target_node_end,
-                                              std::size_t source_node_begin,
-                                              std::size_t source_node_end) const;
-    bool try_particle_cluster_interact_cuda_(std::size_t target_node_begin,
-                                             std::size_t target_node_end,
-                                             std::size_t source_node_idx) const;
-    bool try_cluster_particle_interact_cuda_(std::size_t target_node_idx,
-                                             std::size_t source_node_begin,
-                                             std::size_t source_node_end) const;
-    bool try_cluster_cluster_interact_cuda_(std::size_t target_node_idx,
-                                            std::size_t source_node_idx) const;
-    bool try_upward_pass_cuda_() const;
     void copyin_clusters_to_device_cuda_() const;
     void delete_clusters_from_device_cuda_() const;
 #endif
@@ -151,6 +138,28 @@ public:
         view.weights_num = device_buffers_.weights_num;
         view.scratch_num = device_buffers_.scratch_num;
         view.state = device_state_;
+#endif
+        return view;
+    }
+
+    DeviceView host_view() {
+        DeviceView view;
+        view.ready = true;
+        view.q = mol_interp_charge_.data();
+        view.p = mol_interp_potential_.data();
+        view.coul_eng = coul_eng_vec_.data();
+        view.weights = mol_weights_.data();
+        view.exact_idx_x = exact_idx_x_.data();
+        view.exact_idx_y = exact_idx_y_.data();
+        view.exact_idx_z = exact_idx_z_.data();
+        view.denominator = denominator_.data();
+        view.q_num = mol_interp_charge_.size();
+        view.p_num = mol_interp_potential_.size();
+        view.coul_eng_num = coul_eng_vec_.size();
+        view.weights_num = mol_weights_.size();
+        view.scratch_num = exact_idx_x_.size();
+#ifdef USE_CUDA_CC
+        view.state = CudaDeviceState::HostOnly;
 #endif
         return view;
     }

@@ -1,4 +1,4 @@
-#include "coulombic_energy_compute.h"
+#include "coulombic_backend_cuda.h"
 
 #ifdef USE_CUDA_CC
 #include <cstdlib>
@@ -65,147 +65,161 @@ bool CoulombicEnergyCompute::validate_device_buffers_upward_pass_() const
     return validate_device_buffers_common_();
 }
 
-bool CoulombicEnergyCompute::try_particle_particle_interact_cuda_(std::size_t target_node_begin,
-                                                                  std::size_t target_node_end,
-                                                                  std::size_t source_node_begin,
-                                                                  std::size_t source_node_end) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_particle_particle_()) {
+bool coulombic_try_particle_particle_cuda(
+    const Molecule::View& mol_view,
+    const CoulombicEnergyCompute::DeviceView& self_view,
+    const std::array<std::size_t, 2>& target_node_idxs,
+    const std::array<std::size_t, 2>& source_node_idxs,
+    const CoulombicBackendParams& params,
+    void* stream) {
+    const bool view_ok = mol_view.particles_x && mol_view.particles_y &&
+                         mol_view.particles_z && mol_view.charge &&
+                         self_view.coul_eng;
+    if (!view_ok) {
         return false;
     }
 
-    const auto mol_dev = molecule_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
     coulombic_pp_cuda(
-        mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
-        target_node_begin,
-        target_node_end,
-        source_node_begin,
-        source_node_end,
-        eps_solute_,
-        self_dev.coul_eng,
+        mol_view.particles_x, mol_view.particles_y, mol_view.particles_z, mol_view.charge,
+        target_node_idxs[0],
+        target_node_idxs[1],
+        source_node_idxs[0],
+        source_node_idxs[1],
+        params.eps_solute,
+        self_view.coul_eng,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool CoulombicEnergyCompute::try_particle_cluster_interact_cuda_(std::size_t target_node_begin,
-                                                                 std::size_t target_node_end,
-                                                                 std::size_t source_node_idx) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_particle_cluster_()) {
+bool coulombic_try_particle_cluster_cuda(
+    const Molecule::View& mol_view,
+    const InterpolationPoints::View& mol_interp_view,
+    const CoulombicEnergyCompute::DeviceView& self_view,
+    const std::array<std::size_t, 2>& target_node_idxs,
+    std::size_t source_node_idx,
+    const CoulombicBackendParams& params,
+    void* stream) {
+    const bool view_ok = mol_view.particles_x && mol_view.particles_y &&
+                         mol_view.particles_z && mol_view.charge &&
+                         mol_interp_view.interp_x && mol_interp_view.interp_y &&
+                         mol_interp_view.interp_z &&
+                         self_view.q && self_view.coul_eng;
+    if (!view_ok) {
         return false;
     }
 
-    const auto mol_dev = molecule_.device_view();
-    const auto mol_interp_dev = mol_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
     coulombic_pc_cuda(
-        mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
-        mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
-        self_dev.q,
+        mol_view.particles_x, mol_view.particles_y, mol_view.particles_z, mol_view.charge,
+        mol_interp_view.interp_x, mol_interp_view.interp_y, mol_interp_view.interp_z,
+        self_view.q,
         source_node_idx,
-        num_mol_interp_pts_per_node_,
-        num_mol_interp_charges_per_node_,
-        target_node_begin,
-        target_node_end,
-        eps_solute_,
-        self_dev.coul_eng,
+        params.num_mol_interp_pts_per_node,
+        params.num_mol_interp_charges_per_node,
+        target_node_idxs[0],
+        target_node_idxs[1],
+        params.eps_solute,
+        self_view.coul_eng,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool CoulombicEnergyCompute::try_cluster_particle_interact_cuda_(std::size_t target_node_idx,
-                                                                 std::size_t source_node_begin,
-                                                                 std::size_t source_node_end) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_cluster_particle_()) {
+bool coulombic_try_cluster_particle_cuda(
+    const Molecule::View& mol_view,
+    const InterpolationPoints::View& mol_interp_view,
+    const CoulombicEnergyCompute::DeviceView& self_view,
+    std::size_t target_node_idx,
+    const std::array<std::size_t, 2>& source_node_idxs,
+    const CoulombicBackendParams& params,
+    void* stream) {
+    const bool view_ok = mol_view.particles_x && mol_view.particles_y &&
+                         mol_view.particles_z && mol_view.charge &&
+                         mol_interp_view.interp_x && mol_interp_view.interp_y &&
+                         mol_interp_view.interp_z &&
+                         self_view.p;
+    if (!view_ok) {
         return false;
     }
 
-    const auto mol_dev = molecule_.device_view();
-    const auto mol_interp_dev = mol_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
     coulombic_cp_cuda(
-        mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
-        self_dev.p,
-        mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+        mol_interp_view.interp_x, mol_interp_view.interp_y, mol_interp_view.interp_z,
+        self_view.p,
+        mol_view.particles_x, mol_view.particles_y, mol_view.particles_z, mol_view.charge,
         target_node_idx,
-        num_mol_interp_pts_per_node_,
-        num_mol_interp_potentials_per_node_,
-        source_node_begin,
-        source_node_end,
-        eps_solute_,
+        params.num_mol_interp_pts_per_node,
+        params.num_mol_interp_potentials_per_node,
+        source_node_idxs[0],
+        source_node_idxs[1],
+        params.eps_solute,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool CoulombicEnergyCompute::try_cluster_cluster_interact_cuda_(std::size_t target_node_idx,
-                                                                std::size_t source_node_idx) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_cluster_cluster_()) {
+bool coulombic_try_cluster_cluster_cuda(
+    const InterpolationPoints::View& mol_interp_view,
+    const CoulombicEnergyCompute::DeviceView& self_view,
+    std::size_t target_node_idx,
+    std::size_t source_node_idx,
+    const CoulombicBackendParams& params,
+    void* stream) {
+    const bool view_ok = mol_interp_view.interp_x && mol_interp_view.interp_y &&
+                         mol_interp_view.interp_z &&
+                         self_view.q && self_view.p;
+    if (!view_ok) {
         return false;
     }
 
-    const auto mol_interp_dev = mol_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
     coulombic_cc_cuda(
-        mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
-        self_dev.q, self_dev.p,
+        mol_interp_view.interp_x, mol_interp_view.interp_y, mol_interp_view.interp_z,
+        self_view.q, self_view.p,
         target_node_idx,
         source_node_idx,
-        num_mol_interp_pts_per_node_,
-        num_mol_interp_charges_per_node_,
-        num_mol_interp_potentials_per_node_,
-        eps_solute_,
+        params.num_mol_interp_pts_per_node,
+        params.num_mol_interp_charges_per_node,
+        params.num_mol_interp_potentials_per_node,
+        params.eps_solute,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool CoulombicEnergyCompute::try_upward_pass_cuda_() const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_UP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_upward_pass_()) {
+bool coulombic_try_upward_pass_cuda(
+    const Molecule::View& mol_view,
+    const InterpolationPoints::View& mol_interp_view,
+    const CoulombicEnergyCompute::DeviceView& self_view,
+    const Tree& source_tree,
+    const CoulombicBackendParams& params,
+    void* stream) {
+    const bool view_ok = mol_view.particles_x && mol_view.particles_y &&
+                         mol_view.particles_z && mol_view.charge &&
+                         mol_interp_view.interp_x && mol_interp_view.interp_y &&
+                         mol_interp_view.interp_z &&
+                         self_view.q && self_view.weights &&
+                         self_view.exact_idx_x && self_view.exact_idx_y &&
+                         self_view.exact_idx_z && self_view.denominator;
+    if (!view_ok) {
         return false;
     }
 
-    const auto mol_dev = molecule_.device_view();
-    const auto mol_interp_dev = mol_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
-    for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
-        auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+    for (std::size_t node_idx = 0; node_idx < source_tree.num_nodes(); ++node_idx) {
+        auto particle_idxs = source_tree.node_particle_idxs(node_idx);
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
         if (num_particles == 0) {
             continue;
         }
         coulombic_up_cuda(
-            mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
-            mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
-            self_dev.q,
-            self_dev.weights,
-            self_dev.exact_idx_x, self_dev.exact_idx_y, self_dev.exact_idx_z,
-            self_dev.denominator,
+            mol_view.particles_x, mol_view.particles_y, mol_view.particles_z, mol_view.charge,
+            mol_interp_view.interp_x, mol_interp_view.interp_y, mol_interp_view.interp_z,
+            self_view.q,
+            self_view.weights,
+            self_view.exact_idx_x, self_view.exact_idx_y, self_view.exact_idx_z,
+            self_view.denominator,
             node_idx,
-            num_mol_interp_pts_per_node_,
-            num_mol_interp_charges_per_node_,
+            params.num_mol_interp_pts_per_node,
+            params.num_mol_interp_charges_per_node,
             particle_start,
             num_particles,
             stream);
