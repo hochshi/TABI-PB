@@ -18,11 +18,15 @@
 #endif // PLY_ENABLED
 
 #include "constants.h"
+#include "elements_backend_common.h"
+#include "elements_backend_cpu.h"
+#ifdef USE_CUDA_CC
+#include "elements_backend_cuda.h"
+#endif
 #include "elements.h"
 #include "source_term_compute.h"
 #ifdef USE_CUDA_CC
 #include "cuda_helpers.h"
-#include "elements_cuda.h"
 #endif
 
 static double triangle_area(std::array<std::array<double, 3>, 3> v);
@@ -403,99 +407,30 @@ void Elements::compute_source_term() {
 
   double eps_solute = params_.phys_eps_solute_;
 
-  std::size_t num_atoms = molecule_.num();
-  std::size_t num = num_;
-
-  const double *__restrict elements_x_ptr = x_.data();
-  const double *__restrict elements_y_ptr = y_.data();
-  const double *__restrict elements_z_ptr = z_.data();
-
-  const double *__restrict elements_nx_ptr = nx_.data();
-  const double *__restrict elements_ny_ptr = ny_.data();
-  const double *__restrict elements_nz_ptr = nz_.data();
-
-  const double *__restrict molecule_x_ptr = molecule_.x_ptr();
-  const double *__restrict molecule_y_ptr = molecule_.y_ptr();
-  const double *__restrict molecule_z_ptr = molecule_.z_ptr();
-  const double *__restrict molecule_charge_ptr = molecule_.charge_ptr();
-
-  double *__restrict elements_source_term_ptr = source_term_.data();
-
 #ifdef USE_CUDA_CC
-#ifdef USE_CUDA_CC
-  {
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all =
-        (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    const bool present_ok = validate_device_buffers_compute_source_term_();
-    if (present_ok) {
-      const auto elem_view = device_view();
-      const auto mol_view = molecule_.device_view();
-      const bool view_ok = (elem_view.num == num) &&
-                           (mol_view.num_particles == num_atoms) &&
-                           elem_view.x && elem_view.y && elem_view.z &&
-                           elem_view.nx && elem_view.ny && elem_view.nz &&
-                           elem_view.source_term &&
-                           mol_view.particles_x && mol_view.particles_y &&
-                           mol_view.particles_z && mol_view.charge;
-      if (view_ok) {
-        cudaStream_t stream = nullptr;
-        elements_compute_source_term_cuda(elem_view.x, elem_view.y, elem_view.z,
-                                          elem_view.nx, elem_view.ny, elem_view.nz,
-                                          mol_view.particles_x, mol_view.particles_y,
-                                          mol_view.particles_z, mol_view.charge,
-                                          elem_view.source_term,
-                                          num, num_atoms, eps_solute, stream);
-        Elements::update_source_term_on_host();
-        timers_.compute_source_term.stop();
-        return;
-      }
-    }
-    if (require_all) {
-      std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
-                << "Aborting to avoid OpenACC fallback.\n";
-      std::exit(1);
+  const std::size_t num_atoms = molecule_.num();
+  const std::size_t num = num_;
+  const bool require_all = elements_cuda_require_all();
+  if (validate_device_buffers_compute_source_term_()) {
+    const auto elem_view = device_view();
+    const auto mol_view = molecule_.device_view();
+    if (elements_try_compute_source_term_cuda(elem_view, mol_view, num, num_atoms,
+                                              eps_solute, nullptr)) {
+      Elements::update_source_term_on_host();
+      timers_.compute_source_term.stop();
+      return;
     }
   }
-#endif
-#endif
-#ifdef OPENMP_ENABLED
-#pragma omp parallel for
-#endif
-  for (std::size_t i = 0; i < num; ++i) {
-
-    double source_term_1 = 0.;
-    double source_term_2 = 0.;
-
-    for (std::size_t j = 0; j < num_atoms; ++j) {
-
-      /* r_s = distance of charge position to triangular */
-      double x_dist = molecule_x_ptr[j] - elements_x_ptr[i];
-      double y_dist = molecule_y_ptr[j] - elements_y_ptr[i];
-      double z_dist = molecule_z_ptr[j] - elements_z_ptr[i];
-      double dist =
-          std::sqrt(x_dist * x_dist + y_dist * y_dist + z_dist * z_dist);
-
-      /* cos_theta = <tr_q,r_s>/||r_s||_2 */
-      double cos_theta =
-          (elements_nx_ptr[i] * x_dist + elements_ny_ptr[i] * y_dist +
-           elements_nz_ptr[i] * z_dist) /
-          dist;
-
-      /* G0 = 1/(4pi*||r_s||_2) */
-      double G0 = constants::ONE_OVER_4PI / dist;
-
-      /* G1 = cos_theta*G0/||r_s||_2 */
-      double G1 = cos_theta * G0 / dist;
-
-      /* update source term */
-      source_term_1 += molecule_charge_ptr[j] * G0 / eps_solute;
-      source_term_2 += molecule_charge_ptr[j] * G1 / eps_solute;
-    }
-
-    elements_source_term_ptr[i] += source_term_1;
-    elements_source_term_ptr[num + i] += source_term_2;
+  if (require_all) {
+    std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
+              << "Aborting to avoid OpenACC fallback.\n";
+    std::exit(1);
   }
+#endif
+
+  const auto elem_view = host_view();
+  const auto mol_view = molecule_.host_view();
+  elements_compute_source_term_cpu(elem_view, mol_view, eps_solute);
 
   Elements::update_source_term_on_host();
 
@@ -567,76 +502,29 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
 
   std::size_t num = num_;
 
-  const double *__restrict nx_ptr = nx_.data();
-  const double *__restrict ny_ptr = ny_.data();
-  const double *__restrict nz_ptr = nz_.data();
-  const double *__restrict area_ptr = area_.data();
-
-  double *__restrict target_q_ptr = target_charge_.data();
-  double *__restrict target_q_dx_ptr = target_charge_dx_.data();
-  double *__restrict target_q_dy_ptr = target_charge_dy_.data();
-  double *__restrict target_q_dz_ptr = target_charge_dz_.data();
-
-  double *__restrict source_q_ptr = source_charge_.data();
-  double *__restrict source_q_dx_ptr = source_charge_dx_.data();
-  double *__restrict source_q_dy_ptr = source_charge_dy_.data();
-  double *__restrict source_q_dz_ptr = source_charge_dz_.data();
-
 #ifdef USE_CUDA_CC
-#ifdef USE_CUDA_CC
-  {
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    const bool present_ok = validate_device_buffers_compute_charges_();
-    const bool potential_dev_ok = cuda_pointer_is_device_accessible(potential_ptr);
-    if (present_ok && potential_dev_ok) {
-      const auto elem_view = device_view();
-      const bool view_ok = (elem_view.num == num) &&
-                           elem_view.nx && elem_view.ny && elem_view.nz &&
-                           elem_view.area && elem_view.target_q &&
-                           elem_view.target_q_dx && elem_view.target_q_dy &&
-                           elem_view.target_q_dz && elem_view.source_q &&
-                           elem_view.source_q_dx && elem_view.source_q_dy &&
-                           elem_view.source_q_dz;
-      if (view_ok) {
-        cudaStream_t stream = nullptr;
-        elements_compute_charges_cuda(elem_view.nx, elem_view.ny, elem_view.nz,
-                                      elem_view.area, potential_ptr,
-                                      elem_view.target_q, elem_view.target_q_dx,
-                                      elem_view.target_q_dy, elem_view.target_q_dz,
-                                      elem_view.source_q, elem_view.source_q_dx,
-                                      elem_view.source_q_dy, elem_view.source_q_dz,
-                                      num, stream);
-        timers_.compute_charges.stop();
-        return;
-      }
-    }
-    if (require_all) {
-      if (!potential_dev_ok) {
-        std::cerr << "[CUDA_ELEM] require_all set but potential pointer is not a CUDA device pointer. "
-                  << "Aborting to avoid OpenACC interop fallback.\n";
-      } else {
-        std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
-                  << "Aborting to avoid OpenACC fallback.\n";
-      }
-      std::exit(1);
+  if (validate_device_buffers_compute_charges_()) {
+    const auto elem_view = device_view();
+    if (elements_try_compute_charges_cuda(elem_view, potential_ptr, num,
+                                          nullptr)) {
+      timers_.compute_charges.stop();
+      return;
     }
   }
-#endif
-#elif OPENMP_ENABLED
-#pragma omp parallel for
-#endif
-  for (std::size_t i = 0; i < num; ++i) {
-    target_q_ptr[i] = constants::ONE_OVER_4PI;
-    target_q_dx_ptr[i] = constants::ONE_OVER_4PI * nx_ptr[i];
-    target_q_dy_ptr[i] = constants::ONE_OVER_4PI * ny_ptr[i];
-    target_q_dz_ptr[i] = constants::ONE_OVER_4PI * nz_ptr[i];
-
-    source_q_ptr[i] = area_ptr[i] * potential_ptr[num + i];
-    source_q_dx_ptr[i] = nx_ptr[i] * area_ptr[i] * potential_ptr[i];
-    source_q_dy_ptr[i] = ny_ptr[i] * area_ptr[i] * potential_ptr[i];
-    source_q_dz_ptr[i] = nz_ptr[i] * area_ptr[i] * potential_ptr[i];
+  if (elements_cuda_require_all()) {
+    if (!cuda_pointer_is_device_accessible(potential_ptr)) {
+      std::cerr << "[CUDA_ELEM] require_all set but potential pointer is not a CUDA device pointer. "
+                << "Aborting to avoid OpenACC interop fallback.\n";
+    } else {
+      std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
+                << "Aborting to avoid OpenACC fallback.\n";
+    }
+    std::exit(1);
   }
+#endif
+
+  const auto elem_view = host_view();
+  elements_compute_charges_cpu(elem_view, potential_ptr, num);
 
   timers_.compute_charges.stop();
 }

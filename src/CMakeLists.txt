@@ -4,6 +4,9 @@ add_executable(tabipb main.cpp
         particles.cpp particles.h
         molecule.cpp molecule.h
         elements.cpp elements.h
+        elements_backend_common.h
+        elements_backend_cpu.h elements_backend_cpu.cpp
+        elements_backend_cuda.h elements_backend_cuda.cpp
         tree.cpp tree.h
         interp_pts.cpp interp_pts.h
         interaction_list.cpp interaction_list.h
@@ -80,6 +83,9 @@ if (ENABLE_TABIPB_APBS)
     set(LIBFILES
         params.cpp params.h particles.cpp particles.h 
         molecule.cpp molecule.h elements.cpp elements.h tree.cpp tree.h
+        elements_backend_common.h
+        elements_backend_cpu.h elements_backend_cpu.cpp
+        elements_backend_cuda.h elements_backend_cuda.cpp
         interaction_list.cpp interaction_list.h tree_compute.h
         coulombic_energy_compute.cpp coulombic_energy_compute.h
         solvation_energy_compute.cpp solvation_energy_compute.h

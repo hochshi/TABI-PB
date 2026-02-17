@@ -59,15 +59,16 @@ public:
 
     struct DeviceView {
         bool ready = false;
-        double* particles_x = nullptr;
-        double* particles_y = nullptr;
-        double* particles_z = nullptr;
-        double* charge = nullptr;
+        const double* particles_x = nullptr;
+        const double* particles_y = nullptr;
+        const double* particles_z = nullptr;
+        const double* charge = nullptr;
         std::size_t num_particles = 0;
 #ifdef USE_CUDA_CC
         CudaDeviceState state = CudaDeviceState::HostOnly;
 #endif
     };
+    using View = DeviceView;
 
     DeviceView device_view() const {
         DeviceView view;
@@ -79,6 +80,20 @@ public:
         view.charge = device_buffers_.charge_dev;
         view.num_particles = device_buffers_.num_particles;
         view.state = device_state_;
+#endif
+        return view;
+    }
+
+    DeviceView host_view() const {
+        DeviceView view;
+        view.ready = true;
+        view.particles_x = x_.data();
+        view.particles_y = y_.data();
+        view.particles_z = z_.data();
+        view.charge = charge_.data();
+        view.num_particles = num_;
+#ifdef USE_CUDA_CC
+        view.state = CudaDeviceState::HostOnly;
 #endif
         return view;
     }

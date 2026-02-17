@@ -179,6 +179,7 @@ public:
     CudaDeviceState state = CudaDeviceState::HostOnly;
 #endif
   };
+  using View = DeviceView;
 
   DeviceView device_view() const {
     DeviceView view;
@@ -202,6 +203,32 @@ public:
     view.source_q_dz = device_buffers_.source_q_dz;
     view.num = device_buffers_.num;
     view.state = device_state_;
+#endif
+    return view;
+  }
+
+  DeviceView host_view() {
+    DeviceView view;
+    view.ready = true;
+    view.x = x_.data();
+    view.y = y_.data();
+    view.z = z_.data();
+    view.nx = nx_.data();
+    view.ny = ny_.data();
+    view.nz = nz_.data();
+    view.area = area_.data();
+    view.source_term = source_term_.data();
+    view.target_q = target_charge_.data();
+    view.target_q_dx = target_charge_dx_.data();
+    view.target_q_dy = target_charge_dy_.data();
+    view.target_q_dz = target_charge_dz_.data();
+    view.source_q = source_charge_.data();
+    view.source_q_dx = source_charge_dx_.data();
+    view.source_q_dy = source_charge_dy_.data();
+    view.source_q_dz = source_charge_dz_.data();
+    view.num = num_;
+#ifdef USE_CUDA_CC
+    view.state = CudaDeviceState::HostOnly;
 #endif
     return view;
   }
