@@ -447,7 +447,7 @@ void Elements::compute_source_term(
   timers_.compute_source_term.start();
 
   class SourceTermCompute source_term(
-      source_term_, *this, elem_interp_pts, elem_tree, molecule, mol_interp_pts,
+      *this, elem_interp_pts, elem_tree, molecule, mol_interp_pts,
       mol_tree, interaction_list, params_.phys_eps_solute_);
 
   source_term.compute();

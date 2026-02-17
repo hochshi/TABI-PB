@@ -1,4 +1,4 @@
-#include "source_term_compute.h"
+#include "source_term_backend_cuda.h"
 
 #ifdef USE_CUDA_CC
 #include "elements.h"
@@ -81,154 +81,176 @@ bool SourceTermCompute::validate_device_buffers_downward_pass_() const
     return validate_device_buffers_common_();
 }
 
-bool SourceTermCompute::try_particle_particle_interact_cuda_(std::size_t target_node_begin,
-                                                             std::size_t target_node_end,
-                                                             std::size_t source_node_begin,
-                                                             std::size_t source_node_end) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_particle_particle_()) {
+bool source_term_try_particle_particle_cuda(
+    const Elements::View& elem_view,
+    const Molecule::View& mol_view,
+    const std::array<std::size_t, 2>& target_node_idxs,
+    const std::array<std::size_t, 2>& source_node_idxs,
+    const SourceTermBackendParams& params,
+    void* stream) {
+    const bool view_ok = elem_view.x && elem_view.y && elem_view.z &&
+                         elem_view.nx && elem_view.ny && elem_view.nz &&
+                         elem_view.source_term &&
+                         mol_view.particles_x && mol_view.particles_y &&
+                         mol_view.particles_z && mol_view.charge;
+    if (!view_ok) {
         return false;
     }
 
-    const auto elem_dev = elements_.device_view();
-    const auto mol_dev = molecule_.device_view();
-    void* stream = nullptr;
     source_term_pp_cuda(
-        elem_dev.x, elem_dev.y, elem_dev.z,
-        elem_dev.nx, elem_dev.ny, elem_dev.nz,
-        mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
-        target_node_begin, target_node_end,
-        source_node_begin, source_node_end,
-        one_over_4pi_eps_solute_,
-        elem_dev.source_term, source_term_offset_,
+        elem_view.x, elem_view.y, elem_view.z,
+        elem_view.nx, elem_view.ny, elem_view.nz,
+        mol_view.particles_x, mol_view.particles_y, mol_view.particles_z, mol_view.charge,
+        target_node_idxs[0], target_node_idxs[1],
+        source_node_idxs[0], source_node_idxs[1],
+        params.one_over_4pi_eps_solute,
+        elem_view.source_term, params.source_term_offset,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool SourceTermCompute::try_particle_cluster_interact_cuda_(std::size_t target_node_begin,
-                                                            std::size_t target_node_end,
-                                                            std::size_t source_node_idx) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_particle_cluster_()) {
+bool source_term_try_particle_cluster_cuda(
+    const Elements::View& elem_view,
+    const InterpolationPoints::View& mol_interp_view,
+    const SourceTermCompute::DeviceView& self_view,
+    const std::array<std::size_t, 2>& target_node_idxs,
+    std::size_t source_node_idx,
+    const SourceTermBackendParams& params,
+    void* stream) {
+    const bool view_ok = elem_view.x && elem_view.y && elem_view.z &&
+                         elem_view.nx && elem_view.ny && elem_view.nz &&
+                         elem_view.source_term &&
+                         mol_interp_view.interp_x && mol_interp_view.interp_y &&
+                         mol_interp_view.interp_z &&
+                         self_view.q;
+    if (!view_ok) {
         return false;
     }
 
-    const auto elem_dev = elements_.device_view();
-    const auto mol_interp_dev = mol_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
     source_term_pc_cuda(
-        elem_dev.x, elem_dev.y, elem_dev.z,
-        elem_dev.nx, elem_dev.ny, elem_dev.nz,
-        mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
-        self_dev.q,
+        elem_view.x, elem_view.y, elem_view.z,
+        elem_view.nx, elem_view.ny, elem_view.nz,
+        mol_interp_view.interp_x, mol_interp_view.interp_y, mol_interp_view.interp_z,
+        self_view.q,
         source_node_idx,
-        num_mol_interp_pts_per_node_,
-        num_mol_interp_charges_per_node_,
-        target_node_begin,
-        target_node_end,
-        one_over_4pi_eps_solute_,
-        elem_dev.source_term, source_term_offset_,
+        params.num_mol_interp_pts_per_node,
+        params.num_mol_interp_charges_per_node,
+        target_node_idxs[0],
+        target_node_idxs[1],
+        params.one_over_4pi_eps_solute,
+        elem_view.source_term, params.source_term_offset,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool SourceTermCompute::try_cluster_particle_interact_cuda_(std::size_t target_node_idx,
-                                                            std::size_t source_node_begin,
-                                                            std::size_t source_node_end) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_cluster_particle_()) {
+bool source_term_try_cluster_particle_cuda(
+    const Molecule::View& mol_view,
+    const InterpolationPoints::View& elem_interp_view,
+    const SourceTermCompute::DeviceView& self_view,
+    std::size_t target_node_idx,
+    const std::array<std::size_t, 2>& source_node_idxs,
+    const SourceTermBackendParams& params,
+    void* stream) {
+    const bool view_ok = elem_interp_view.interp_x && elem_interp_view.interp_y &&
+                         elem_interp_view.interp_z &&
+                         self_view.p && self_view.p_dx &&
+                         self_view.p_dy && self_view.p_dz &&
+                         mol_view.particles_x && mol_view.particles_y &&
+                         mol_view.particles_z && mol_view.charge;
+    if (!view_ok) {
         return false;
     }
 
-    const auto elem_interp_dev = elem_interp_pts_.device_view();
-    const auto mol_dev = molecule_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
     source_term_cp_cuda(
-        elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
-        self_dev.p, self_dev.p_dx,
-        self_dev.p_dy, self_dev.p_dz,
-        mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
+        elem_interp_view.interp_x, elem_interp_view.interp_y, elem_interp_view.interp_z,
+        self_view.p, self_view.p_dx,
+        self_view.p_dy, self_view.p_dz,
+        mol_view.particles_x, mol_view.particles_y, mol_view.particles_z, mol_view.charge,
         target_node_idx,
-        num_elem_interp_pts_per_node_,
-        num_elem_interp_potentials_per_node_,
-        source_node_begin,
-        source_node_end,
-        one_over_4pi_eps_solute_,
+        params.num_elem_interp_pts_per_node,
+        params.num_elem_interp_potentials_per_node,
+        source_node_idxs[0],
+        source_node_idxs[1],
+        params.one_over_4pi_eps_solute,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool SourceTermCompute::try_cluster_cluster_interact_cuda_(std::size_t target_node_idx,
-                                                           std::size_t source_node_idx) const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_cluster_cluster_()) {
+bool source_term_try_cluster_cluster_cuda(
+    const InterpolationPoints::View& elem_interp_view,
+    const InterpolationPoints::View& mol_interp_view,
+    const SourceTermCompute::DeviceView& self_view,
+    std::size_t target_node_idx,
+    std::size_t source_node_idx,
+    const SourceTermBackendParams& params,
+    void* stream) {
+    const bool view_ok = elem_interp_view.interp_x && elem_interp_view.interp_y &&
+                         elem_interp_view.interp_z &&
+                         mol_interp_view.interp_x && mol_interp_view.interp_y &&
+                         mol_interp_view.interp_z &&
+                         self_view.q &&
+                         self_view.p && self_view.p_dx &&
+                         self_view.p_dy && self_view.p_dz;
+    if (!view_ok) {
         return false;
     }
 
-    const auto elem_interp_dev = elem_interp_pts_.device_view();
-    const auto mol_interp_dev = mol_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
     source_term_cc_cuda(
-        elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
-        self_dev.p, self_dev.p_dx,
-        self_dev.p_dy, self_dev.p_dz,
-        mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
-        self_dev.q,
+        elem_interp_view.interp_x, elem_interp_view.interp_y, elem_interp_view.interp_z,
+        self_view.p, self_view.p_dx,
+        self_view.p_dy, self_view.p_dz,
+        mol_interp_view.interp_x, mol_interp_view.interp_y, mol_interp_view.interp_z,
+        self_view.q,
         target_node_idx,
         source_node_idx,
-        num_elem_interp_pts_per_node_,
-        num_elem_interp_potentials_per_node_,
-        num_mol_interp_pts_per_node_,
-        num_mol_interp_charges_per_node_,
-        one_over_4pi_eps_solute_,
+        params.num_elem_interp_pts_per_node,
+        params.num_elem_interp_potentials_per_node,
+        params.num_mol_interp_pts_per_node,
+        params.num_mol_interp_charges_per_node,
+        params.one_over_4pi_eps_solute,
         stream);
     CUDA_CHECK_LAST_KERNEL();
     return true;
 }
 
-bool SourceTermCompute::try_upward_pass_cuda_() const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_UP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_upward_pass_()) {
+bool source_term_try_upward_pass_cuda(
+    const Molecule::View& mol_view,
+    const InterpolationPoints::View& mol_interp_view,
+    const SourceTermCompute::DeviceView& self_view,
+    const Tree& source_tree,
+    const SourceTermBackendParams& params,
+    void* stream) {
+    const bool view_ok = mol_view.particles_x && mol_view.particles_y &&
+                         mol_view.particles_z && mol_view.charge &&
+                         mol_interp_view.interp_x && mol_interp_view.interp_y &&
+                         mol_interp_view.interp_z &&
+                         self_view.q && self_view.mol_weights &&
+                         self_view.exact_idx_x && self_view.exact_idx_y &&
+                         self_view.exact_idx_z && self_view.denominator;
+    if (!view_ok) {
         return false;
     }
 
-    const auto mol_dev = molecule_.device_view();
-    const auto mol_interp_dev = mol_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
-    for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
-        auto particle_idxs = source_tree_.node_particle_idxs(node_idx);
+    for (std::size_t node_idx = 0; node_idx < source_tree.num_nodes(); ++node_idx) {
+        auto particle_idxs = source_tree.node_particle_idxs(node_idx);
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
         if (num_particles == 0) {
             continue;
         }
         source_term_up_cuda(
-            mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
-            mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
-            self_dev.q,
-            self_dev.mol_weights,
-            self_dev.exact_idx_x, self_dev.exact_idx_y, self_dev.exact_idx_z,
-            self_dev.denominator,
+            mol_view.particles_x, mol_view.particles_y, mol_view.particles_z, mol_view.charge,
+            mol_interp_view.interp_x, mol_interp_view.interp_y, mol_interp_view.interp_z,
+            self_view.q,
+            self_view.mol_weights,
+            self_view.exact_idx_x, self_view.exact_idx_y, self_view.exact_idx_z,
+            self_view.denominator,
             node_idx,
-            num_mol_interp_pts_per_node_,
-            num_mol_interp_charges_per_node_,
+            params.num_mol_interp_pts_per_node,
+            params.num_mol_interp_charges_per_node,
             particle_start,
             num_particles,
             stream);
@@ -238,39 +260,46 @@ bool SourceTermCompute::try_upward_pass_cuda_() const
     return true;
 }
 
-bool SourceTermCompute::try_downward_pass_cuda_() const
-{
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_DOWN");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (!use_cuda || !validate_device_buffers_downward_pass_()) {
+bool source_term_try_downward_pass_cuda(
+    const Elements::View& elem_view,
+    const InterpolationPoints::View& elem_interp_view,
+    const SourceTermCompute::DeviceView& self_view,
+    const Tree& target_tree,
+    const SourceTermBackendParams& params,
+    void* stream) {
+    const bool view_ok = elem_view.x && elem_view.y && elem_view.z &&
+                         elem_view.nx && elem_view.ny && elem_view.nz &&
+                         elem_view.source_term &&
+                         elem_interp_view.interp_x && elem_interp_view.interp_y &&
+                         elem_interp_view.interp_z &&
+                         self_view.p && self_view.p_dx &&
+                         self_view.p_dy && self_view.p_dz &&
+                         self_view.elem_weights;
+    if (!view_ok) {
         return false;
     }
 
-    const auto elem_dev = elements_.device_view();
-    const auto elem_interp_dev = elem_interp_pts_.device_view();
-    const auto self_dev = device_view();
-    void* stream = nullptr;
-    for (std::size_t node_idx = 0; node_idx < target_tree_.num_nodes(); ++node_idx) {
-        auto particle_idxs = target_tree_.node_particle_idxs(node_idx);
+    for (std::size_t node_idx = 0; node_idx < target_tree.num_nodes(); ++node_idx) {
+        auto particle_idxs = target_tree.node_particle_idxs(node_idx);
         std::size_t particle_start = particle_idxs[0];
         std::size_t num_particles = particle_idxs[1] - particle_idxs[0];
         if (num_particles == 0) {
             continue;
         }
         source_term_down_cuda(
-            elem_dev.x, elem_dev.y, elem_dev.z,
-            elem_dev.nx, elem_dev.ny, elem_dev.nz,
-            elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
-            self_dev.p, self_dev.p_dx,
-            self_dev.p_dy, self_dev.p_dz,
-            self_dev.elem_weights,
+            elem_view.x, elem_view.y, elem_view.z,
+            elem_view.nx, elem_view.ny, elem_view.nz,
+            elem_interp_view.interp_x, elem_interp_view.interp_y, elem_interp_view.interp_z,
+            self_view.p, self_view.p_dx,
+            self_view.p_dy, self_view.p_dz,
+            self_view.elem_weights,
             node_idx,
-            num_elem_interp_pts_per_node_,
-            num_elem_interp_potentials_per_node_,
+            params.num_elem_interp_pts_per_node,
+            params.num_elem_interp_potentials_per_node,
             particle_start,
             num_particles,
-            elem_dev.source_term,
-            source_term_offset_,
+            elem_view.source_term,
+            params.source_term_offset,
             stream);
         CUDA_CHECK_LAST_KERNEL();
     }
