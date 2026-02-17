@@ -20,6 +20,7 @@ add_executable(tabipb main.cpp
         coulombic_energy_compute.cpp coulombic_energy_compute.h
         solvation_energy_compute.cpp solvation_energy_compute.h
         source_term_compute.cpp source_term_compute.h
+        source_term_backend_cuda.cpp
         boundary_element.cpp gmres.cpp
         precondition.cpp boundary_element.h
         output.cpp output.h output_backend_cuda.cpp
@@ -100,6 +101,7 @@ if (ENABLE_TABIPB_APBS)
         coulombic_energy_compute.cpp coulombic_energy_compute.h
         solvation_energy_compute.cpp solvation_energy_compute.h
         source_term_compute.cpp source_term_compute.h
+        source_term_backend_cuda.cpp
         boundary_element.cpp gmres.cpp precondition.cpp 
         boundary_element.h constants.h
         output.cpp output.h output_backend_cuda.cpp tabipb_timers.h timer.h
