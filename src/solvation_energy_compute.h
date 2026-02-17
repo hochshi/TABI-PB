@@ -90,6 +90,22 @@ private:
     bool validate_device_buffers_cluster_cluster_() const;
     bool validate_device_buffers_upward_pass_() const;
     bool validate_device_buffers_downward_pass_() const;
+    bool try_particle_particle_interact_cuda_(std::size_t target_node_begin,
+                                              std::size_t target_node_end,
+                                              std::size_t source_node_begin,
+                                              std::size_t source_node_end) const;
+    bool try_particle_cluster_interact_cuda_(std::size_t target_node_begin,
+                                             std::size_t target_node_end,
+                                             std::size_t source_node_idx) const;
+    bool try_cluster_particle_interact_cuda_(std::size_t target_node_idx,
+                                             std::size_t source_node_begin,
+                                             std::size_t source_node_end) const;
+    bool try_cluster_cluster_interact_cuda_(std::size_t target_node_idx,
+                                            std::size_t source_node_idx) const;
+    bool try_upward_pass_cuda_() const;
+    bool try_downward_pass_cuda_() const;
+    void copyin_clusters_to_device_cuda_() const;
+    void delete_clusters_from_device_cuda_() const;
 #endif
 
     
