@@ -3,6 +3,7 @@ add_executable(tabipb main.cpp
         params.cpp params.h
         particles.cpp particles.h
         molecule.cpp molecule.h
+        molecule_backend_cuda.cpp
         elements.cpp elements.h
         elements_backend_common.h
         elements_backend_cpu.h elements_backend_cpu.cpp
@@ -82,7 +83,7 @@ if (ENABLE_TABIPB_APBS)
   
     set(LIBFILES
         params.cpp params.h particles.cpp particles.h 
-        molecule.cpp molecule.h elements.cpp elements.h tree.cpp tree.h
+        molecule.cpp molecule.h molecule_backend_cuda.cpp elements.cpp elements.h tree.cpp tree.h
         elements_backend_common.h
         elements_backend_cpu.h elements_backend_cpu.cpp
         elements_backend_cuda.h elements_backend_cuda.cpp

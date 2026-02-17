@@ -42,6 +42,8 @@ private:
 
     mutable DeviceBuffers device_buffers_;
     mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
+    void copyin_to_device_cuda_() const;
+    void delete_from_device_cuda_() const;
 #endif
 
 public:
