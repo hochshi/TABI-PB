@@ -56,6 +56,11 @@ private:
     mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
     bool validate_device_buffers_compute_coulombic_energy_() const;
     bool validate_device_buffers_compute_solvation_energy_() const;
+    void copyin_potential_to_device_cuda_(const double* potential_ptr,
+                                          std::size_t potential_num) const;
+    void cleanup_potential_device_buffer_cuda_() const;
+    bool try_compute_coulombic_energy_cuda_(double& coulombic_energy) const;
+    bool try_compute_solvation_energy_cuda_(double& solvation_energy) const;
 #endif
 
 public:

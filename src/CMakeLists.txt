@@ -17,7 +17,7 @@ add_executable(tabipb main.cpp
         source_term_compute.cpp source_term_compute.h
         boundary_element.cpp gmres.cpp
         precondition.cpp boundary_element.h
-        output.cpp output.h
+        output.cpp output.h output_backend_cuda.cpp
         tabipb_timers.h timer.h constants.h)
 
 if (ENABLE_CUDA_CC)
@@ -93,7 +93,7 @@ if (ENABLE_TABIPB_APBS)
         source_term_compute.cpp source_term_compute.h
         boundary_element.cpp gmres.cpp precondition.cpp 
         boundary_element.h constants.h
-        output.cpp output.h tabipb_timers.h timer.h
+        output.cpp output.h output_backend_cuda.cpp tabipb_timers.h timer.h
         tabipb_wrap/TABIPBWrap.cpp tabipb_wrap/TABIPBWrap.h
         tabipb_wrap/TABIPBStruct.h tabipb_wrap/params_apbs_ctor.cpp
         tabipb_wrap/molecule_apbs_ctor.cpp)
