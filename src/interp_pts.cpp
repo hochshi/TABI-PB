@@ -6,6 +6,9 @@
 
 #include "interp_pts.h"
 #include "interp_pts_backend_cpu.h"
+#ifdef USE_CUDA_CC
+#include "interp_pts_backend_cuda.h"
+#endif
 
 namespace {
 std::vector<double> build_node_bounds(const Tree& tree) {
@@ -51,8 +54,12 @@ void InterpolationPoints::compute_all_interp_pts()
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    if (try_compute_all_interp_pts_cuda_(bounds.data(), num_nodes, num_interp_pts_per_node)) {
-        return;
+    if (validate_device_buffers_compute_interp_pts_()) {
+        const auto interp_view = device_view();
+        if (interp_pts_try_compute_cuda(bounds.data(), num_nodes, num_interp_pts_per_node,
+                                        interp_view, nullptr)) {
+            return;
+        }
     }
     if (require_all) {
         std::fprintf(stderr,
@@ -62,7 +69,8 @@ void InterpolationPoints::compute_all_interp_pts()
     }
 #endif
 
-    interp_pts_compute_cpu(bounds.data(), num_nodes, num_interp_pts_per_node, host_view());
+    const auto interp_view = host_view();
+    interp_pts_compute_cpu(bounds.data(), num_nodes, num_interp_pts_per_node, interp_view);
 
     //timers_.compute_all_interp_pts.stop();
 }

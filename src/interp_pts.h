@@ -12,8 +12,6 @@
 class InterpolationPoints
 {
 private:
-    friend class BoundaryElement;
-
     const class Tree& tree_;
 
     int num_interp_pts_per_node_;
@@ -26,7 +24,6 @@ private:
 #ifdef USE_CUDA_CC
     class DeviceBuffers {
         friend class InterpolationPoints;
-        friend class BoundaryElement;
     private:
         bool ready = false;
         double* interp_x_dev = nullptr;
@@ -38,9 +35,6 @@ private:
     mutable DeviceBuffers device_buffers_;
     mutable CudaDeviceState device_state_ = CudaDeviceState::HostOnly;
     bool validate_device_buffers_compute_interp_pts_() const;
-    bool try_compute_all_interp_pts_cuda_(const double* node_bounds,
-                                          std::size_t num_nodes,
-                                          int num_interp_pts_per_node) const;
     void copyin_to_device_cuda_() const;
     void delete_from_device_cuda_() const;
 #endif

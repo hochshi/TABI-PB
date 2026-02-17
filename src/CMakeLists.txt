@@ -14,6 +14,7 @@ add_executable(tabipb main.cpp
         tree.cpp tree.h
         interp_pts.cpp interp_pts.h
         interp_pts_backend_cpu.h interp_pts_backend_cpu.cpp
+        interp_pts_backend_cuda.h
         interp_pts_backend_cuda.cpp
         interaction_list.cpp interaction_list.h
         tree_compute.cpp tree_compute.h
@@ -95,7 +96,7 @@ if (ENABLE_TABIPB_APBS)
         main_backend_cuda.cpp
         params.cpp params.h particles.cpp particles.h 
         molecule.cpp molecule.h molecule_backend_cuda.cpp elements.cpp elements.h tree.cpp tree.h
-        interp_pts.cpp interp_pts.h interp_pts_backend_cpu.h interp_pts_backend_cpu.cpp interp_pts_backend_cuda.cpp
+        interp_pts.cpp interp_pts.h interp_pts_backend_cpu.h interp_pts_backend_cpu.cpp interp_pts_backend_cuda.h interp_pts_backend_cuda.cpp
         elements_backend_common.h
         elements_backend_cpu.h elements_backend_cpu.cpp
         elements_backend_cuda.h elements_backend_cuda.cpp
