@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "boundary_element.h"
+#include "gmres_backend_cuda.h"
 
 #ifdef USE_CUDA_CC
 #include <cuda_runtime.h>
@@ -110,23 +111,6 @@ static void dgemv_(long int m, long int n, const double* a, long int lda,
 static void update_(long int i, long int n, double* x, const double* h, long int ldh,
                     double* y, const double* s, const double* v, long int ldv);
 static void basis_(long int i, long int n, double* h, double* v, long int ldv, double* w);
-
-#ifdef USE_CUDA_CC
-static void update_cuda_(long int i, long int n, double* x,
-                         double* v_dev, long int ldv,
-                         double* x_dev, double* h_dev, long int ldh,
-                         double* s_dev,
-                         void* stream)
-{
-    if (i <= 0) return;
-    (void)x;
-    gmres_cuda_dtrsv_upper(h_dev, static_cast<std::size_t>(ldh),
-                           s_dev, static_cast<std::size_t>(i), stream);
-    gmres_cuda_dgemv(v_dev, static_cast<std::size_t>(ldv),
-                     s_dev, x_dev,
-                     static_cast<std::size_t>(n), static_cast<std::size_t>(i), stream);
-}
-#endif
 
 //*****************************************************************
 int BoundaryElement::gmres_(long int n, const double *b, double *x, long int restrt,
@@ -533,11 +517,11 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
 
 #ifdef USE_CUDA_CC
                 if (use_cuda_gmres) {
-                    update_cuda_(i + 1, n, x,
-                                 work_dev + 3 * ldw, ldw,
-                                 x_dev, h_dev, ldh,
-                                 work_dev + ldw,
-                                 cuda_stream);
+                    gmres_update_cuda(i + 1, n, x,
+                                      work_dev + 3 * ldw, ldw,
+                                      x_dev, h_dev, ldh,
+                                      work_dev + ldw,
+                                      cuda_stream);
                     cudaMemcpyAsync(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
                                     cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
                     cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
@@ -563,11 +547,11 @@ int BoundaryElement::gmres_(long int n, const double *b, double *x, long int res
 
 #ifdef USE_CUDA_CC
         if (use_cuda_gmres) {
-            update_cuda_(restrt, n, x,
-                         work_dev + 3 * ldw, ldw,
-                         x_dev, h_dev, ldh,
-                         work_dev + ldw,
-                         cuda_stream);
+            gmres_update_cuda(restrt, n, x,
+                              work_dev + 3 * ldw, ldw,
+                              x_dev, h_dev, ldh,
+                              work_dev + ldw,
+                              cuda_stream);
         } else
 #endif
         {
