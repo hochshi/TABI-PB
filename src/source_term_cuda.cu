@@ -577,12 +577,12 @@ __global__ void source_term_pp_batched_kernel(
         double tny = elem_ny[j];
         double tnz = elem_nz[j];
 
-        double pot_temp_1 = 0.0;
-        double pot_temp_dx = 0.0;
-        double pot_temp_dy = 0.0;
-        double pot_temp_dz = 0.0;
-
         for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            double pot_temp_1 = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
             std::uint32_t source_node_idx = pp_sources[list_idx];
             std::uint32_t source_begin = source_node_begin[source_node_idx];
             std::uint32_t source_end = source_node_end[source_node_idx];
@@ -601,10 +601,11 @@ __global__ void source_term_pp_batched_kernel(
                 pot_temp_dy += Gn * q * dy;
                 pot_temp_dz += Gn * q * dz;
             }
-        }
 
-        source_term[j] += pot_temp_1;
-        source_term[j + source_term_offset] += tnx * pot_temp_dx + tny * pot_temp_dy + tnz * pot_temp_dz;
+            source_term[j] += pot_temp_1;
+            source_term[j + source_term_offset] +=
+                tnx * pot_temp_dx + tny * pot_temp_dy + tnz * pot_temp_dz;
+        }
     }
 }
 
@@ -647,12 +648,12 @@ __global__ void source_term_pc_batched_kernel(
         double tny = elem_ny[j];
         double tnz = elem_nz[j];
 
-        double pot_temp_1 = 0.0;
-        double pot_temp_dx = 0.0;
-        double pot_temp_dy = 0.0;
-        double pot_temp_dz = 0.0;
-
         for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            double pot_temp_1 = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
             std::size_t source_node_idx = static_cast<std::size_t>(pc_sources[list_idx]);
             std::size_t interp_pts_begin =
                 source_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
@@ -684,10 +685,11 @@ __global__ void source_term_pc_batched_kernel(
                     }
                 }
             }
-        }
 
-        source_term[j] += pot_temp_1;
-        source_term[j + source_term_offset] += tnx * pot_temp_dx + tny * pot_temp_dy + tnz * pot_temp_dz;
+            source_term[j] += pot_temp_1;
+            source_term[j + source_term_offset] +=
+                tnx * pot_temp_dx + tny * pot_temp_dy + tnz * pot_temp_dz;
+        }
     }
 }
 
@@ -735,12 +737,12 @@ __global__ void source_term_cp_batched_kernel(
         double ty = elem_clusters_y[interp_pts_begin + j2];
         double tz = elem_clusters_z[interp_pts_begin + j3];
 
-        double pot_temp_1 = 0.0;
-        double pot_temp_dx = 0.0;
-        double pot_temp_dy = 0.0;
-        double pot_temp_dz = 0.0;
-
         for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            double pot_temp_1 = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
             std::uint32_t source_node_idx = cp_sources[list_idx];
             std::uint32_t source_begin = source_node_begin[source_node_idx];
             std::uint32_t source_end = source_node_end[source_node_idx];
@@ -758,12 +760,12 @@ __global__ void source_term_cp_batched_kernel(
                 pot_temp_dy += Gn * q * dy;
                 pot_temp_dz += Gn * q * dz;
             }
-        }
 
-        elem_clusters_p[jj] += pot_temp_1;
-        elem_clusters_p_dx[jj] += pot_temp_dx;
-        elem_clusters_p_dy[jj] += pot_temp_dy;
-        elem_clusters_p_dz[jj] += pot_temp_dz;
+            elem_clusters_p[jj] += pot_temp_1;
+            elem_clusters_p_dx[jj] += pot_temp_dx;
+            elem_clusters_p_dy[jj] += pot_temp_dy;
+            elem_clusters_p_dz[jj] += pot_temp_dz;
+        }
     }
 }
 
@@ -811,12 +813,12 @@ __global__ void source_term_cc_batched_kernel(
         double ty = elem_clusters_y[target_interp_pts_begin + j2];
         double tz = elem_clusters_z[target_interp_pts_begin + j3];
 
-        double pot_temp_1 = 0.0;
-        double pot_temp_dx = 0.0;
-        double pot_temp_dy = 0.0;
-        double pot_temp_dz = 0.0;
-
         for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            double pot_temp_1 = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
             std::size_t source_node_idx = static_cast<std::size_t>(cc_sources[list_idx]);
             std::size_t source_interp_pts_begin =
                 source_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
@@ -849,12 +851,12 @@ __global__ void source_term_cc_batched_kernel(
                     }
                 }
             }
-        }
 
-        elem_clusters_p[jj] += pot_temp_1;
-        elem_clusters_p_dx[jj] += pot_temp_dx;
-        elem_clusters_p_dy[jj] += pot_temp_dy;
-        elem_clusters_p_dz[jj] += pot_temp_dz;
+            elem_clusters_p[jj] += pot_temp_1;
+            elem_clusters_p_dx[jj] += pot_temp_dx;
+            elem_clusters_p_dy[jj] += pot_temp_dy;
+            elem_clusters_p_dz[jj] += pot_temp_dz;
+        }
     }
 }
 

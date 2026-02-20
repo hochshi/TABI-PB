@@ -125,7 +125,7 @@ bool SourceTermCompute::run_batched_interactions_cuda_()
 {
     const char* use_batched_env = std::getenv("TABIPB_CUDA_SOURCE_TERM_BATCHED");
     const bool use_batched =
-        !(use_batched_env && std::strcmp(use_batched_env, "0") == 0);
+        (use_batched_env && std::strcmp(use_batched_env, "0") != 0);
     if (!use_batched) {
         return false;
     }
