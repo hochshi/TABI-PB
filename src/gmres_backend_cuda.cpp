@@ -1,7 +1,13 @@
 #include "gmres_backend_cuda.h"
+#include "boundary_element.h"
 
 #ifdef USE_CUDA_CC
 #include "gmres_cuda.h"
+
+int BoundaryElement::gmres_cuda_(const GmresView& view)
+{
+    return gmres_impl_(view, true);
+}
 
 void gmres_update_cuda(long int i, long int n, double* x,
                        double* v_dev, long int ldv,

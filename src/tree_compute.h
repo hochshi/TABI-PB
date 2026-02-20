@@ -14,6 +14,25 @@
 #include "tree.h"
 #include "interaction_list.h"
 
+struct TreeComputeBackendParams {
+    bool debug_progress = false;
+    bool debug_verbose = false;
+};
+
+struct TreeComputeView {
+    const class Tree* source_tree = nullptr;
+    const class Tree* target_tree = nullptr;
+    const class InteractionList* interaction_list = nullptr;
+};
+
+class TreeCompute;
+void tree_compute_run_cpu(TreeCompute& self, const TreeComputeView& view,
+                          const TreeComputeBackendParams& params);
+#ifdef USE_CUDA_CC
+void tree_compute_run_cuda(TreeCompute& self, const TreeComputeView& view,
+                           const TreeComputeBackendParams& params);
+#endif
+
 
 class TreeCompute
 {
@@ -21,6 +40,13 @@ protected:
     const class Tree& source_tree_;
     const class Tree& target_tree_;
     const class InteractionList& interaction_list_;
+
+    friend void tree_compute_run_cpu(TreeCompute& self, const TreeComputeView& view,
+                                     const TreeComputeBackendParams& params);
+#ifdef USE_CUDA_CC
+    friend void tree_compute_run_cuda(TreeCompute& self, const TreeComputeView& view,
+                                      const TreeComputeBackendParams& params);
+#endif
     
     virtual void particle_particle_interact(std::array<std::size_t, 2> target_node_particle_idxs,
                                             std::array<std::size_t, 2> source_node_particle_idxs) = 0;
@@ -41,6 +67,8 @@ protected:
 
     
 public:
+    using View = TreeComputeView;
+
     TreeCompute(const class Tree& source_tree, const class Tree& target_tree,
                 const class InteractionList& interaction_list)
         : source_tree_(source_tree), target_tree_(target_tree), interaction_list_(interaction_list) {};
@@ -49,6 +77,14 @@ public:
                 const class InteractionList& interaction_list)
         : source_tree_(tree), target_tree_(tree), interaction_list_(interaction_list) {};
         
+    View view() const {
+        View view;
+        view.source_tree = &source_tree_;
+        view.target_tree = &target_tree_;
+        view.interaction_list = &interaction_list_;
+        return view;
+    }
+
     virtual ~TreeCompute() = default;
     void run();
 };

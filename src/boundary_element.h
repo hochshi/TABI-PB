@@ -150,14 +150,34 @@ private:
     double pot_max_;
     double pot_normal_min_;
     double pot_normal_max_;
+
+    struct GmresView {
+        long int n = 0;
+        const double* b = nullptr;
+        double* x = nullptr;
+        long int restrt = 0;
+        double* work = nullptr;
+        long int ldw = 0;
+        double* h = nullptr;
+        long int ldh = 0;
+        long int* iter = nullptr;
+        double* residual = nullptr;
+    };
     
     int gmres_(long int n, const double* b, double* x, long int restrt,
                double* work, long int ldw, double *h, long int ldh,
                long int& iter, double& residual);
+    int gmres_impl_(const GmresView& view, bool enable_cuda_backend);
+    int gmres_cpu_(const GmresView& view);
+#ifdef USE_CUDA_CC
+    int gmres_cuda_(const GmresView& view);
+#endif
     
     void matrix_vector(double alpha, const double* __restrict potential_old,
                        double beta,        double* __restrict potential_new,
                        bool device_ptrs = false);
+    void matrix_vector_cpu_(double alpha, const double* __restrict potential_old,
+                            double beta,        double* __restrict potential_new);
 #ifdef USE_CUDA_CC
     void matrix_vector_cuda(double alpha, const double* potential_old_dev,
                             double beta, double* potential_new_dev,
@@ -221,9 +241,9 @@ public:
     struct DeviceView {
         bool ready = false;
         bool owns_clusters_xyz = true;
-        double* clusters_x = nullptr;
-        double* clusters_y = nullptr;
-        double* clusters_z = nullptr;
+        const double* clusters_x = nullptr;
+        const double* clusters_y = nullptr;
+        const double* clusters_z = nullptr;
         double* clusters_q = nullptr;
         double* clusters_q_dx = nullptr;
         double* clusters_q_dy = nullptr;
@@ -267,6 +287,7 @@ public:
         const std::size_t* level_nodes = nullptr;
         std::size_t level_nodes_num = 0;
         std::size_t num_nodes = 0;
+        std::size_t potential_num = 0;
 #ifdef USE_CUDA_CC
         CudaDeviceState state = CudaDeviceState::HostOnly;
 #endif
@@ -323,7 +344,67 @@ public:
         view.level_nodes = device_buffers_.level_nodes;
         view.level_nodes_num = device_buffers_.level_nodes_num;
         view.num_nodes = device_buffers_.num_nodes;
+        view.potential_num = potential_.size();
         view.state = device_state_;
+#endif
+        return view;
+    }
+    using View = DeviceView;
+
+    View host_view() {
+        auto elem_view = elements_.host_view();
+        View view;
+        view.ready = true;
+        view.owns_clusters_xyz = false;
+        view.clusters_x = interp_pts_.interp_x_ptr();
+        view.clusters_y = interp_pts_.interp_y_ptr();
+        view.clusters_z = interp_pts_.interp_z_ptr();
+        view.clusters_q = interp_charge_.data();
+        view.clusters_q_dx = interp_charge_dx_.data();
+        view.clusters_q_dy = interp_charge_dy_.data();
+        view.clusters_q_dz = interp_charge_dz_.data();
+        view.clusters_p = interp_potential_.data();
+        view.clusters_p_dx = interp_potential_dx_.data();
+        view.clusters_p_dy = interp_potential_dy_.data();
+        view.clusters_p_dz = interp_potential_dz_.data();
+        view.elements_x = elem_view.x;
+        view.elements_y = elem_view.y;
+        view.elements_z = elem_view.z;
+        view.elements_nx = elem_view.nx;
+        view.elements_ny = elem_view.ny;
+        view.elements_nz = elem_view.nz;
+        view.elements_area = elem_view.area;
+        view.targets_q = elem_view.target_q;
+        view.targets_q_dx = elem_view.target_q_dx;
+        view.targets_q_dy = elem_view.target_q_dy;
+        view.targets_q_dz = elem_view.target_q_dz;
+        view.sources_q = elem_view.source_q;
+        view.sources_q_dx = elem_view.source_q_dx;
+        view.sources_q_dy = elem_view.source_q_dy;
+        view.sources_q_dz = elem_view.source_q_dz;
+        view.weights = weights_.data();
+        view.potential_temp = potential_temp_.data();
+        view.exact_idx_x = exact_idx_x_.data();
+        view.exact_idx_y = exact_idx_y_.data();
+        view.exact_idx_z = exact_idx_z_.data();
+        view.denominator = denominator_.data();
+        view.node_begin = node_particles_begin_u32_.data();
+        view.node_end = node_particles_end_u32_.data();
+        view.element_node_idx = element_node_idx_u32_.data();
+        view.pp_offsets = pp_offsets_u32_.data();
+        view.pp_sources = pp_sources_u32_.data();
+        view.pc_offsets = pc_offsets_u32_.data();
+        view.pc_sources = pc_sources_u32_.data();
+        view.cp_offsets = cp_offsets_u32_.data();
+        view.cp_sources = cp_sources_u32_.data();
+        view.cc_offsets = cc_offsets_u32_.data();
+        view.cc_sources = cc_sources_u32_.data();
+        view.level_nodes = level_nodes_.data();
+        view.level_nodes_num = level_nodes_.size();
+        view.num_nodes = tree_.num_nodes();
+        view.potential_num = potential_.size();
+#ifdef USE_CUDA_CC
+        view.state = CudaDeviceState::HostOnly;
 #endif
         return view;
     }

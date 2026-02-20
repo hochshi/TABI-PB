@@ -18,6 +18,8 @@ add_executable(tabipb main.cpp
         interp_pts_backend_cuda.cpp
         interaction_list.cpp interaction_list.h
         tree_compute.cpp tree_compute.h
+        tree_compute_backend_cpu.h tree_compute_backend_cpu.cpp
+        tree_compute_backend_cuda.h tree_compute_backend_cuda.cpp
         coulombic_energy_compute.cpp coulombic_energy_compute.h
         coulombic_backend_common.h
         coulombic_backend_cpu.h coulombic_backend_cpu.cpp
@@ -33,7 +35,8 @@ add_executable(tabipb main.cpp
         source_term_backend_cpu.h source_term_backend_cpu.cpp
         source_term_backend_cuda.h
         source_term_backend_cuda.cpp
-        boundary_element.cpp boundary_backend_cuda.cpp gmres.cpp gmres_backend_cuda.cpp
+        boundary_element.cpp boundary_backend_cpu.cpp boundary_backend_cuda.cpp
+        gmres.cpp gmres_backend_common.cpp gmres_backend_cpu.cpp gmres_backend_cuda.cpp
         precondition.cpp boundary_element.h
         output.cpp output.h output_backend_cuda.cpp
         tabipb_timers.h timer.h constants.h)
@@ -110,6 +113,8 @@ if (ENABLE_TABIPB_APBS)
         elements_backend_cpu.h elements_backend_cpu.cpp
         elements_backend_cuda.h elements_backend_cuda.cpp
         interaction_list.cpp interaction_list.h tree_compute.cpp tree_compute.h
+        tree_compute_backend_cpu.h tree_compute_backend_cpu.cpp
+        tree_compute_backend_cuda.h tree_compute_backend_cuda.cpp
         coulombic_energy_compute.cpp coulombic_energy_compute.h
         coulombic_backend_common.h
         coulombic_backend_cpu.h coulombic_backend_cpu.cpp
@@ -125,7 +130,8 @@ if (ENABLE_TABIPB_APBS)
         source_term_backend_cpu.h source_term_backend_cpu.cpp
         source_term_backend_cuda.h
         source_term_backend_cuda.cpp
-        boundary_element.cpp boundary_backend_cuda.cpp gmres.cpp gmres_backend_cuda.cpp precondition.cpp 
+        boundary_element.cpp boundary_backend_cpu.cpp boundary_backend_cuda.cpp
+        gmres.cpp gmres_backend_common.cpp gmres_backend_cpu.cpp gmres_backend_cuda.cpp precondition.cpp 
         boundary_element.h constants.h
         output.cpp output.h output_backend_cuda.cpp tabipb_timers.h timer.h
         tabipb_wrap/TABIPBWrap.cpp tabipb_wrap/TABIPBWrap.h
