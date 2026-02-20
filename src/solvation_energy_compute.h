@@ -49,6 +49,18 @@ private:
     std::size_t num_mol_charges_;
     
     std::vector<double> mol_interp_charge_;
+
+    /* Persistent weights + scratch */
+
+    std::size_t max_mol_particles_per_node_;
+
+    std::vector<double> mol_weights_;
+    std::vector<double> elem_weights_;
+
+    mutable std::vector<int> exact_idx_x_;
+    mutable std::vector<int> exact_idx_y_;
+    mutable std::vector<int> exact_idx_z_;
+    mutable std::vector<double> denominator_;
     
     
     /* Solvation energy */
@@ -68,6 +80,10 @@ private:
         double* p_dy_dev = nullptr;
         double* p_dz_dev = nullptr;
         double* solv_eng_dev = nullptr;
+        int* exact_idx_x_dev = nullptr;
+        int* exact_idx_y_dev = nullptr;
+        int* exact_idx_z_dev = nullptr;
+        double* denominator_dev = nullptr;
 
         std::size_t weights_up_num = 0;
         std::size_t weights_down_num = 0;
@@ -77,6 +93,7 @@ private:
         std::size_t p_dy_num = 0;
         std::size_t p_dz_num = 0;
         std::size_t solv_eng_num = 0;
+        std::size_t scratch_num = 0;
 
         bool ready = false;
     };
@@ -90,20 +107,6 @@ private:
     bool validate_device_buffers_cluster_cluster_() const;
     bool validate_device_buffers_upward_pass_() const;
     bool validate_device_buffers_downward_pass_() const;
-    bool try_particle_particle_interact_cuda_(std::size_t target_node_begin,
-                                              std::size_t target_node_end,
-                                              std::size_t source_node_begin,
-                                              std::size_t source_node_end) const;
-    bool try_particle_cluster_interact_cuda_(std::size_t target_node_begin,
-                                             std::size_t target_node_end,
-                                             std::size_t source_node_idx) const;
-    bool try_cluster_particle_interact_cuda_(std::size_t target_node_idx,
-                                             std::size_t source_node_begin,
-                                             std::size_t source_node_end) const;
-    bool try_cluster_cluster_interact_cuda_(std::size_t target_node_idx,
-                                            std::size_t source_node_idx) const;
-    bool try_upward_pass_cuda_() const;
-    bool try_downward_pass_cuda_() const;
     void copyin_clusters_to_device_cuda_() const;
     void delete_clusters_from_device_cuda_() const;
 #endif
@@ -138,6 +141,10 @@ public:
         double* p_dy = nullptr;
         double* p_dz = nullptr;
         double* solv_eng = nullptr;
+        int* exact_idx_x = nullptr;
+        int* exact_idx_y = nullptr;
+        int* exact_idx_z = nullptr;
+        double* denominator = nullptr;
 
         std::size_t weights_up_num = 0;
         std::size_t weights_down_num = 0;
@@ -147,6 +154,7 @@ public:
         std::size_t p_dy_num = 0;
         std::size_t p_dz_num = 0;
         std::size_t solv_eng_num = 0;
+        std::size_t scratch_num = 0;
 #ifdef USE_CUDA_CC
         CudaDeviceState state = CudaDeviceState::HostOnly;
 #endif
@@ -164,6 +172,10 @@ public:
         view.p_dy = device_buffers_.p_dy_dev;
         view.p_dz = device_buffers_.p_dz_dev;
         view.solv_eng = device_buffers_.solv_eng_dev;
+        view.exact_idx_x = device_buffers_.exact_idx_x_dev;
+        view.exact_idx_y = device_buffers_.exact_idx_y_dev;
+        view.exact_idx_z = device_buffers_.exact_idx_z_dev;
+        view.denominator = device_buffers_.denominator_dev;
         view.weights_up_num = device_buffers_.weights_up_num;
         view.weights_down_num = device_buffers_.weights_down_num;
         view.q_num = device_buffers_.q_num;
@@ -172,7 +184,38 @@ public:
         view.p_dy_num = device_buffers_.p_dy_num;
         view.p_dz_num = device_buffers_.p_dz_num;
         view.solv_eng_num = device_buffers_.solv_eng_num;
+        view.scratch_num = device_buffers_.scratch_num;
         view.state = device_state_;
+#endif
+        return view;
+    }
+
+    DeviceView host_view() {
+        DeviceView view;
+        view.ready = true;
+        view.weights_up = mol_weights_.data();
+        view.weights_down = elem_weights_.data();
+        view.q = mol_interp_charge_.data();
+        view.p = elem_interp_potential_.data();
+        view.p_dx = elem_interp_potential_dx_.data();
+        view.p_dy = elem_interp_potential_dy_.data();
+        view.p_dz = elem_interp_potential_dz_.data();
+        view.solv_eng = solv_eng_vec_.data();
+        view.exact_idx_x = exact_idx_x_.data();
+        view.exact_idx_y = exact_idx_y_.data();
+        view.exact_idx_z = exact_idx_z_.data();
+        view.denominator = denominator_.data();
+        view.weights_up_num = mol_weights_.size();
+        view.weights_down_num = elem_weights_.size();
+        view.q_num = mol_interp_charge_.size();
+        view.p_num = elem_interp_potential_.size();
+        view.p_dx_num = elem_interp_potential_dx_.size();
+        view.p_dy_num = elem_interp_potential_dy_.size();
+        view.p_dz_num = elem_interp_potential_dz_.size();
+        view.solv_eng_num = solv_eng_vec_.size();
+        view.scratch_num = exact_idx_x_.size();
+#ifdef USE_CUDA_CC
+        view.state = CudaDeviceState::HostOnly;
 #endif
         return view;
     }

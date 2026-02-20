@@ -24,6 +24,9 @@ add_executable(tabipb main.cpp
         coulombic_backend_cuda.h
         coulombic_backend_cuda.cpp
         solvation_energy_compute.cpp solvation_energy_compute.h
+        solvation_backend_common.h
+        solvation_backend_cpu.h solvation_backend_cpu.cpp
+        solvation_backend_cuda.h
         solvation_backend_cuda.cpp
         source_term_compute.cpp source_term_compute.h
         source_term_backend_common.h
@@ -113,6 +116,9 @@ if (ENABLE_TABIPB_APBS)
         coulombic_backend_cuda.h
         coulombic_backend_cuda.cpp
         solvation_energy_compute.cpp solvation_energy_compute.h
+        solvation_backend_common.h
+        solvation_backend_cpu.h solvation_backend_cpu.cpp
+        solvation_backend_cuda.h
         solvation_backend_cuda.cpp
         source_term_compute.cpp source_term_compute.h
         source_term_backend_common.h
