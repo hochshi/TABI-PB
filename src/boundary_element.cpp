@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -152,15 +153,6 @@ BoundaryElement::BoundaryElement(class Elements& elements, const class Interpola
 void BoundaryElement::run_GMRES()
 {
     timers_.run_GMRES.start();
-    const char* debug_env = std::getenv("TABIPB_DEBUG_PROGRESS");
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
-    const bool debug_progress = require_all ||
-                                (debug_env && std::strcmp(debug_env, "0") != 0);
-    const char* skip_flush_env = std::getenv("TABIPB_DEBUG_SKIP_BE_TIMER_FLUSH");
-    const bool skip_timer_flush = (skip_flush_env && std::strcmp(skip_flush_env, "0") != 0);
-    const char* skip_delete_env = std::getenv("TABIPB_DEBUG_SKIP_BE_DELETE");
-    const bool skip_delete = (skip_delete_env && std::strcmp(skip_delete_env, "0") != 0);
 
     long int restrt = params_.gmres_restart_;
     long int length = output_.potential().size();
@@ -188,34 +180,10 @@ void BoundaryElement::run_GMRES()
     }
 
 #ifdef USE_CUDA_CC
-    if (skip_timer_flush) {
-        if (debug_progress) {
-            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: flush_cuda_timers_ skipped\n";
-        }
-    } else {
-        if (debug_progress) {
-            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: flush_cuda_timers_ begin\n";
-        }
-        flush_cuda_timers_();
-        if (debug_progress) {
-            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: flush_cuda_timers_ end\n";
-        }
-    }
+    flush_cuda_timers_();
 #endif
 
-    if (skip_delete) {
-        if (debug_progress) {
-            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: delete_clusters_from_device skipped\n";
-        }
-    } else {
-        if (debug_progress) {
-            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: delete_clusters_from_device begin\n";
-        }
-        BoundaryElement::delete_clusters_from_device();
-        if (debug_progress) {
-            std::cerr << "[DEBUG] BoundaryElement::run_GMRES: delete_clusters_from_device end\n";
-        }
-    }
+    BoundaryElement::delete_clusters_from_device();
     
     output_.set_residual(residual);
     output_.set_num_iter(num_iter);
@@ -3157,6 +3125,15 @@ void BoundaryElement::copyin_clusters_to_device() const
                 std::exit(1);
             }
         };
+        auto check_memcpy_h2d = [&](void* dst, const void* src, std::size_t bytes, const char* what) {
+            const auto t0 = std::chrono::steady_clock::now();
+            check(cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice), what);
+            const auto t1 = std::chrono::steady_clock::now();
+            tabipb_cuda_stats::record_memcpy(
+                cudaMemcpyHostToDevice, bytes,
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+        };
 
         const std::size_t num_interp_pts =
             static_cast<std::size_t>(interp_pts_.num_interp_pts_per_node()) * ptrs.num_nodes;
@@ -3203,9 +3180,8 @@ void BoundaryElement::copyin_clusters_to_device() const
     if (!weights_.empty()) {
             const std::size_t weights_num = weights_.size();
             check(cudaMalloc(&ptrs.weights, weights_num * sizeof(double)), "cudaMalloc weights");
-            check(cudaMemcpy(ptrs.weights, weights_.data(), weights_num * sizeof(double),
-                             cudaMemcpyHostToDevice),
-                  "cudaMemcpy weights");
+            check_memcpy_h2d(ptrs.weights, weights_.data(), weights_num * sizeof(double),
+                             "cudaMemcpy weights");
         }
 
     if (potential_num > 0) {
@@ -3221,21 +3197,18 @@ void BoundaryElement::copyin_clusters_to_device() const
                   "cudaMalloc node_begin");
             check(cudaMalloc(&ptrs.node_end, ptrs.num_nodes * sizeof(std::uint32_t)),
                   "cudaMalloc node_end");
-            check(cudaMemcpy(ptrs.node_begin, node_particles_begin_u32_.data(),
-                             ptrs.num_nodes * sizeof(std::uint32_t), cudaMemcpyHostToDevice),
-                  "cudaMemcpy node_begin");
-            check(cudaMemcpy(ptrs.node_end, node_particles_end_u32_.data(),
-                             ptrs.num_nodes * sizeof(std::uint32_t), cudaMemcpyHostToDevice),
-                  "cudaMemcpy node_end");
+            check_memcpy_h2d(ptrs.node_begin, node_particles_begin_u32_.data(),
+                             ptrs.num_nodes * sizeof(std::uint32_t), "cudaMemcpy node_begin");
+            check_memcpy_h2d(ptrs.node_end, node_particles_end_u32_.data(),
+                             ptrs.num_nodes * sizeof(std::uint32_t), "cudaMemcpy node_end");
 
             if (!element_node_idx_u32_.empty()) {
                 check(cudaMalloc(&ptrs.element_node_idx,
                                  element_node_idx_u32_.size() * sizeof(std::uint32_t)),
                       "cudaMalloc element_node_idx");
-                check(cudaMemcpy(ptrs.element_node_idx, element_node_idx_u32_.data(),
+                check_memcpy_h2d(ptrs.element_node_idx, element_node_idx_u32_.data(),
                                  element_node_idx_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy element_node_idx");
+                                 "cudaMemcpy element_node_idx");
             }
 
             if (!pp_offsets_u32_.empty()) {
@@ -3272,52 +3245,44 @@ void BoundaryElement::copyin_clusters_to_device() const
             }
 
             if (!pp_offsets_u32_.empty()) {
-                check(cudaMemcpy(ptrs.pp_offsets, pp_offsets_u32_.data(),
+                check_memcpy_h2d(ptrs.pp_offsets, pp_offsets_u32_.data(),
                                  pp_offsets_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy pp_offsets");
+                                 "cudaMemcpy pp_offsets");
             }
             if (!pp_sources_u32_.empty()) {
-                check(cudaMemcpy(ptrs.pp_sources, pp_sources_u32_.data(),
+                check_memcpy_h2d(ptrs.pp_sources, pp_sources_u32_.data(),
                                  pp_sources_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy pp_sources");
+                                 "cudaMemcpy pp_sources");
             }
             if (!pc_offsets_u32_.empty()) {
-                check(cudaMemcpy(ptrs.pc_offsets, pc_offsets_u32_.data(),
+                check_memcpy_h2d(ptrs.pc_offsets, pc_offsets_u32_.data(),
                                  pc_offsets_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy pc_offsets");
+                                 "cudaMemcpy pc_offsets");
             }
             if (!pc_sources_u32_.empty()) {
-                check(cudaMemcpy(ptrs.pc_sources, pc_sources_u32_.data(),
+                check_memcpy_h2d(ptrs.pc_sources, pc_sources_u32_.data(),
                                  pc_sources_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy pc_sources");
+                                 "cudaMemcpy pc_sources");
             }
             if (!cp_offsets_u32_.empty()) {
-                check(cudaMemcpy(ptrs.cp_offsets, cp_offsets_u32_.data(),
+                check_memcpy_h2d(ptrs.cp_offsets, cp_offsets_u32_.data(),
                                  cp_offsets_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy cp_offsets");
+                                 "cudaMemcpy cp_offsets");
             }
             if (!cp_sources_u32_.empty()) {
-                check(cudaMemcpy(ptrs.cp_sources, cp_sources_u32_.data(),
+                check_memcpy_h2d(ptrs.cp_sources, cp_sources_u32_.data(),
                                  cp_sources_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy cp_sources");
+                                 "cudaMemcpy cp_sources");
             }
             if (!cc_offsets_u32_.empty()) {
-                check(cudaMemcpy(ptrs.cc_offsets, cc_offsets_u32_.data(),
+                check_memcpy_h2d(ptrs.cc_offsets, cc_offsets_u32_.data(),
                                  cc_offsets_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy cc_offsets");
+                                 "cudaMemcpy cc_offsets");
             }
             if (!cc_sources_u32_.empty()) {
-                check(cudaMemcpy(ptrs.cc_sources, cc_sources_u32_.data(),
+                check_memcpy_h2d(ptrs.cc_sources, cc_sources_u32_.data(),
                                  cc_sources_u32_.size() * sizeof(std::uint32_t),
-                                 cudaMemcpyHostToDevice),
-                      "cudaMemcpy cc_sources");
+                                 "cudaMemcpy cc_sources");
             }
 
         if (!exact_idx_x_.empty()) {
@@ -3334,10 +3299,9 @@ void BoundaryElement::copyin_clusters_to_device() const
         if (!level_nodes_.empty()) {
             check(cudaMalloc(&ptrs.level_nodes, level_nodes_.size() * sizeof(std::size_t)),
                   "cudaMalloc level_nodes");
-            check(cudaMemcpy(ptrs.level_nodes, level_nodes_.data(),
+            check_memcpy_h2d(ptrs.level_nodes, level_nodes_.data(),
                              level_nodes_.size() * sizeof(std::size_t),
-                             cudaMemcpyHostToDevice),
-                  "cudaMemcpy level_nodes");
+                             "cudaMemcpy level_nodes");
         }
     }
 

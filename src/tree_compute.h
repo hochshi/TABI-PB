@@ -3,10 +3,6 @@
 
 //#include "particles.h"
 //#include "interp_pts.h"
-#include <cstdlib>
-#include <cstring>
-#include <iostream>
-
 #ifdef USE_CUDA_CC
 #include "cuda_helpers.h"
 #endif
@@ -14,10 +10,7 @@
 #include "tree.h"
 #include "interaction_list.h"
 
-struct TreeComputeBackendParams {
-    bool debug_progress = false;
-    bool debug_verbose = false;
-};
+struct TreeComputeBackendParams {};
 
 struct TreeComputeView {
     const class Tree* source_tree = nullptr;

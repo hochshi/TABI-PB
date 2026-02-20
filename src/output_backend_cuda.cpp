@@ -1,6 +1,7 @@
 #include "output.h"
 
 #ifdef USE_CUDA_CC
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -109,11 +110,16 @@ bool Output::try_compute_coulombic_energy_cuda_(double& coulombic_energy) const 
                           num_atoms, epsp, energy_dev, stream);
     CUDA_CHECK_LAST_KERNEL();
 
+    const auto copy_t0 = std::chrono::steady_clock::now();
     check(cudaMemcpyAsync(&coulombic_energy, energy_dev, sizeof(double),
                           cudaMemcpyDeviceToHost, stream),
           "cudaMemcpyAsync coulombic_energy");
-    check(cudaStreamSynchronize(stream),
-          "cudaStreamSynchronize coulombic_energy");
+    const auto copy_t1 = std::chrono::steady_clock::now();
+    tabipb_cuda_stats::record_memcpy(
+        cudaMemcpyDeviceToHost, sizeof(double),
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count()));
+    CUDA_STREAM_SYNC_AND_CHECK(stream);
     cudaFree(energy_dev);
 
     return true;
@@ -165,11 +171,16 @@ bool Output::try_compute_solvation_energy_cuda_(double& solvation_energy) const 
                           energy_dev, stream);
     CUDA_CHECK_LAST_KERNEL();
 
+    const auto copy_t0 = std::chrono::steady_clock::now();
     check(cudaMemcpyAsync(&solvation_energy, energy_dev, sizeof(double),
                           cudaMemcpyDeviceToHost, stream),
           "cudaMemcpyAsync solvation_energy");
-    check(cudaStreamSynchronize(stream),
-          "cudaStreamSynchronize solvation_energy");
+    const auto copy_t1 = std::chrono::steady_clock::now();
+    tabipb_cuda_stats::record_memcpy(
+        cudaMemcpyDeviceToHost, sizeof(double),
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count()));
+    CUDA_STREAM_SYNC_AND_CHECK(stream);
     cudaFree(energy_dev);
 
     return true;

@@ -491,7 +491,7 @@ void SolvationEnergyCompute::delete_clusters_from_device_cuda_() const
             CUDA_MEMCPY_ASYNC(solv_eng_vec_.data(), buf.solv_eng_dev,
                               solv_eng_num * sizeof(double),
                               cudaMemcpyDeviceToHost, stream);
-            CUDA_CHECK(cudaStreamSynchronize(stream));
+            CUDA_STREAM_SYNC_AND_CHECK(stream);
         }
         CUDA_FREE_AND_NULL(buf.q_dev);
         CUDA_FREE_AND_NULL(buf.p_dev);

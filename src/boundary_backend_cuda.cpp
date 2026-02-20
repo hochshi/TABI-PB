@@ -385,7 +385,7 @@ void BoundaryElement::CudaTimerQueue::end(void* stream)
 void BoundaryElement::CudaTimerQueue::flush()
 {
     if (sections.empty()) return;
-    cudaEventSynchronize(sections.back().stop);
+    CUDA_EVENT_SYNC_AND_CHECK(sections.back().stop);
     for (auto& section : sections) {
         float ms = 0.0f;
         if (cudaEventElapsedTime(&ms, section.start, section.stop) == cudaSuccess) {

@@ -209,7 +209,7 @@ void Elements::update_source_term_on_host_cuda_() {
   CUDA_MEMCPY_ASYNC(source_term_.data(), device_buffers_.source_term,
                     source_term_num * sizeof(double), cudaMemcpyDeviceToHost,
                     stream);
-  CUDA_CHECK(cudaStreamSynchronize(stream));
+  CUDA_STREAM_SYNC_AND_CHECK(stream);
 }
 
 void Elements::delete_from_device_cuda_() const {

@@ -8,6 +8,7 @@
 
 #ifdef USE_CUDA_CC
 #include <cuda_runtime.h>
+#include "cuda_helpers.h"
 #include "gmres_cuda.h"
 #endif
 
@@ -146,8 +147,6 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
     const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
     const bool require_gmres = require_all ||
                                (require_env && std::strcmp(require_env, "0") != 0);
-    const char* verbose_env = std::getenv("TABIPB_CUDA_GMRES_VERBOSE");
-    const bool verbose_gmres = require_gmres || (verbose_env && std::strcmp(verbose_env, "0") != 0);
     use_cuda_gmres = enable_cuda_backend &&
                      (require_gmres || (gmres_env && std::strcmp(gmres_env, "0") != 0));
     (void)std::getenv("TABIPB_CUDA_GMRES_DEBUG_MAP");
@@ -181,7 +180,7 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
                 work_dev = nullptr;
                 use_cuda_gmres = false;
             } else {
-                cudaMemcpyAsync(x_dev, x, static_cast<std::size_t>(n) * sizeof(double),
+                CUDA_MEMCPY_ASYNC(x_dev, x, static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
                 err = cudaMalloc(&b_dev, static_cast<std::size_t>(n) * sizeof(double));
                 if (err != cudaSuccess) {
@@ -196,7 +195,7 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
                     work_dev = nullptr;
                     use_cuda_gmres = false;
                 } else {
-                    cudaMemcpyAsync(b_dev, b, static_cast<std::size_t>(n) * sizeof(double),
+                    CUDA_MEMCPY_ASYNC(b_dev, b, static_cast<std::size_t>(n) * sizeof(double),
                                     cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
                 }
                 if (use_cuda_gmres) {
@@ -281,13 +280,6 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
             }
         }
     }
-    if (use_cuda_gmres && verbose_gmres) {
-        static bool step2_logged = false;
-        if (!step2_logged) {
-            std::cerr << "[CUDA_GMRES] Step 2 complete: Krylov vectors mapped on device across iterations.\n";
-            step2_logged = true;
-        }
-    }
 #else
     const bool use_cuda_gmres = false;
     (void)use_cuda_gmres;
@@ -296,25 +288,25 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
 #ifdef USE_CUDA_CC
     if (use_cuda_gmres) {
         if (use_cuda_precond && b_dev) {
-            cudaMemcpyAsync(work_dev + 2 * ldw, b_dev,
+            CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, b_dev,
                             static_cast<std::size_t>(n) * sizeof(double),
                             cudaMemcpyDeviceToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
         } else if (b_dev) {
-            cudaMemcpyAsync(work_dev + 2 * ldw, b_dev,
+            CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, b_dev,
                             static_cast<std::size_t>(n) * sizeof(double),
                             cudaMemcpyDeviceToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
         } else {
-            cudaMemcpyAsync(work_dev + 2 * ldw, b,
+            CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, b,
                             static_cast<std::size_t>(n) * sizeof(double),
                             cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
         }
         if (dnrm2_(n, x) != 0.) {
             BoundaryElement::matrix_vector_cuda(-1., x_dev, 1., work_dev + 2 * ldw, cuda_stream);
             if (!use_cuda_precond) {
-                cudaMemcpyAsync(work + 2 * ldw, work_dev + 2 * ldw,
+                CUDA_MEMCPY_ASYNC(work + 2 * ldw, work_dev + 2 * ldw,
                                 static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
             }
         }
     } else
@@ -338,9 +330,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
 
 #ifdef USE_CUDA_CC
     if (use_cuda_gmres && !use_cuda_precond) {
-        cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw, static_cast<std::size_t>(n) * sizeof(double),
+        CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, work + 2 * ldw, static_cast<std::size_t>(n) * sizeof(double),
                         cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
-        cudaMemcpyAsync(work_dev, work, static_cast<std::size_t>(n) * sizeof(double),
+        CUDA_MEMCPY_ASYNC(work_dev, work, static_cast<std::size_t>(n) * sizeof(double),
                         cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
     }
 #endif
@@ -350,9 +342,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
     if (use_cuda_gmres && b_dev && scalars_dev) {
         gmres_cuda_dnrm2(b_dev, static_cast<std::size_t>(n),
                          scalars_dev, 1, cuda_stream);
-        cudaMemcpyAsync(&bnrm2, scalars_dev, sizeof(double),
+        CUDA_MEMCPY_ASYNC(&bnrm2, scalars_dev, sizeof(double),
                         cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-        cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+        CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
     } else
 #endif
     {
@@ -366,9 +358,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
         if (scalars_dev) {
             gmres_cuda_dnrm2(work_dev, static_cast<std::size_t>(n),
                              scalars_dev + 1, 1, cuda_stream);
-            cudaMemcpyAsync(&wnorm, scalars_dev + 1, sizeof(double),
+            CUDA_MEMCPY_ASYNC(&wnorm, scalars_dev + 1, sizeof(double),
                             cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-            cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+            CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
         }
         if (wnorm / bnrm2 < tol) {
             if (work_dev) cudaFree(work_dev);
@@ -398,12 +390,12 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
             if (scalars_dev) {
                 gmres_cuda_dnrm2(work_dev + 3 * ldw, static_cast<std::size_t>(n),
                                  scalars_dev + 2, 1, cuda_stream);
-                cudaMemcpyAsync(&rnorm, scalars_dev + 2, sizeof(double),
+                CUDA_MEMCPY_ASYNC(&rnorm, scalars_dev + 2, sizeof(double),
                                 cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
             }
             gmres_cuda_dscal(work_dev + 3 * ldw, 1. / rnorm, static_cast<std::size_t>(n), cuda_stream);
-            cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+            CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
         } else
 #endif
         {
@@ -419,7 +411,7 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
             const std::size_t s_len = static_cast<std::size_t>(restrt + 1);
             cudaMemsetAsync(work_dev + ldw, 0, s_len * sizeof(double),
                             reinterpret_cast<cudaStream_t>(cuda_stream));
-            cudaMemcpyAsync(work_dev + ldw, &rnorm, sizeof(double),
+            CUDA_MEMCPY_ASYNC(work_dev + ldw, &rnorm, sizeof(double),
                             cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
         } else
         #endif
@@ -436,10 +428,10 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
             BoundaryElement::matrix_vector_cuda(1., work_dev + static_cast<std::size_t>(3 + i) * static_cast<std::size_t>(ldw),
                                                 0., work_dev + 2 * ldw, cuda_stream);
             if (!use_cuda_precond) {
-                cudaMemcpyAsync(work + 2 * ldw, work_dev + 2 * ldw,
+                CUDA_MEMCPY_ASYNC(work + 2 * ldw, work_dev + 2 * ldw,
                                 static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-                    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                    CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
                 }
             } else
             #endif
@@ -461,7 +453,7 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
 #ifdef USE_CUDA_CC
             if (use_cuda_gmres) {
                 if (!use_cuda_precond) {
-                cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw,
+                CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, work + 2 * ldw,
                                 static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
                 }
@@ -469,7 +461,7 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
                                  h_dev + static_cast<std::size_t>(i) * static_cast<std::size_t>(ldh),
                                  work_dev + 3 * ldw, static_cast<std::size_t>(ldw),
                                  work_dev + 2 * ldw, cuda_stream);
-                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
             } else
 #endif
             {
@@ -488,10 +480,10 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
                                         work_dev + ldw, i, restrt,
                                         resid_dev, cuda_stream);
                 double resid_dev_host = 0.0;
-                cudaMemcpyAsync(&resid_dev_host, resid_dev, sizeof(double),
+                CUDA_MEMCPY_ASYNC(&resid_dev_host, resid_dev, sizeof(double),
                                 cudaMemcpyDeviceToHost,
                                 reinterpret_cast<cudaStream_t>(cuda_stream));
-                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
                 resid = std::fabs(resid_dev_host) / bnrm2;
             } else
 #endif
@@ -531,9 +523,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
                                       x_dev, h_dev, ldh,
                                       work_dev + ldw,
                                       cuda_stream);
-                    cudaMemcpyAsync(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
+                    CUDA_MEMCPY_ASYNC(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
                                     cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-                    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                    CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
                 } else
 #endif
                 {
@@ -573,20 +565,20 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
         #ifdef USE_CUDA_CC
         if (use_cuda_gmres) {
             if (b_dev) {
-                cudaMemcpyAsync(work_dev + 2 * ldw, b_dev,
+                CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, b_dev,
                                 static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyDeviceToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
             } else {
-                cudaMemcpyAsync(work_dev + 2 * ldw, b,
+                CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, b,
                                 static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
             }
             BoundaryElement::matrix_vector_cuda(-1., x_dev, 1., work_dev + 2 * ldw, cuda_stream);
             if (!use_cuda_precond) {
-                cudaMemcpyAsync(work + 2 * ldw, work_dev + 2 * ldw,
+                CUDA_MEMCPY_ASYNC(work + 2 * ldw, work_dev + 2 * ldw,
                                 static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
             }
         } else
         #endif
@@ -606,10 +598,10 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
 
 #ifdef USE_CUDA_CC
         if (use_cuda_gmres && !use_cuda_precond) {
-            cudaMemcpyAsync(work_dev + 2 * ldw, work + 2 * ldw,
+            CUDA_MEMCPY_ASYNC(work_dev + 2 * ldw, work + 2 * ldw,
                             static_cast<std::size_t>(n) * sizeof(double),
                             cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
-            cudaMemcpyAsync(work_dev, work,
+            CUDA_MEMCPY_ASYNC(work_dev, work,
                             static_cast<std::size_t>(n) * sizeof(double),
                             cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(cuda_stream));
         }
@@ -619,9 +611,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
             double rnorm = 0.0;
             gmres_cuda_dnrm2(work_dev, static_cast<std::size_t>(n),
                              scalars_dev + 2, 1, cuda_stream);
-            cudaMemcpyAsync(&rnorm, scalars_dev + 2, sizeof(double),
+            CUDA_MEMCPY_ASYNC(&rnorm, scalars_dev + 2, sizeof(double),
                             cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-            cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+            CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
             resid = rnorm / bnrm2;
         } else
 #endif
@@ -633,9 +625,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
         if (resid <= tol) {
 #ifdef USE_CUDA_CC
             if (use_cuda_gmres) {
-                cudaMemcpyAsync(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
+                CUDA_MEMCPY_ASYNC(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
             }
             if (work_dev) cudaFree(work_dev);
             if (x_dev) cudaFree(x_dev);
@@ -650,9 +642,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
         if (iter == maxit) {
 #ifdef USE_CUDA_CC
             if (use_cuda_gmres) {
-                cudaMemcpyAsync(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
+                CUDA_MEMCPY_ASYNC(x, x_dev, static_cast<std::size_t>(n) * sizeof(double),
                                 cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(cuda_stream));
-                cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
+                CUDA_STREAM_SYNC_AND_CHECK(reinterpret_cast<cudaStream_t>(cuda_stream));
             }
             if (work_dev) cudaFree(work_dev);
             if (x_dev) cudaFree(x_dev);

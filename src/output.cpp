@@ -168,50 +168,25 @@ void Output::compute_solvation_energy(const class InterpolationPoints& elem_inte
                                       const class InteractionList& interaction_list)
 {
     timers_.compute_solvation_energy.start();
-    const char* debug_env = std::getenv("TABIPB_DEBUG_PROGRESS");
-    const char* require_all_env_dbg = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all_dbg =
-        (require_all_env_dbg && std::strcmp(require_all_env_dbg, "0") != 0);
-    const bool debug_progress = require_all_dbg ||
-                                (debug_env && std::strcmp(debug_env, "0") != 0);
     const double* potential_device_ptr = nullptr;
 
 #ifdef USE_CUDA_CC
     const double* __restrict potential_ptr = potential_.data();
     const std::size_t potential_num = potential_.size();
-    if (debug_progress) {
-        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): potential copy/map begin\n";
-    }
     copyin_potential_to_device_cuda_(potential_ptr, potential_num);
     potential_device_ptr = device_buffers_.potential_dev;
-    if (debug_progress) {
-        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): potential copy/map end\n";
-    }
 #endif
     
-    if (debug_progress) {
-        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute ctor begin\n";
-    }
     class SolvationEnergyCompute solvation_energy(potential_,
                                                   elements_, elem_interp_pts, elem_tree,
                                                   molecule_, mol_interp_pts, mol_tree,
                                                   interaction_list, params_.phys_eps_, params_.phys_kappa_,
                                                   potential_device_ptr);
-    if (debug_progress) {
-        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute ctor end\n";
-        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute::compute begin\n";
-    }
                                                   
     solvation_energy_ = solvation_energy.compute();
-    if (debug_progress) {
-        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): SolvationEnergyCompute::compute end\n";
-    }
 
 #ifdef USE_CUDA_CC
     cleanup_potential_device_buffer_cuda_();
-    if (debug_progress) {
-        std::cerr << "[DEBUG] Output::compute_solvation_energy(FMM): potential cleanup end\n";
-    }
 #endif
 
     timers_.compute_solvation_energy.stop();

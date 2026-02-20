@@ -39,6 +39,7 @@ add_executable(tabipb main.cpp
         gmres.cpp gmres_backend_common.cpp gmres_backend_cpu.cpp gmres_backend_cuda.cpp
         precondition.cpp boundary_element.h
         output.cpp output.h output_backend_cuda.cpp
+        cuda_copy_sync_stats.cpp cuda_copy_sync_stats.h
         tabipb_timers.h timer.h constants.h)
 
 if (ENABLE_CUDA_CC)
@@ -134,6 +135,7 @@ if (ENABLE_TABIPB_APBS)
         gmres.cpp gmres_backend_common.cpp gmres_backend_cpu.cpp gmres_backend_cuda.cpp precondition.cpp 
         boundary_element.h constants.h
         output.cpp output.h output_backend_cuda.cpp tabipb_timers.h timer.h
+        cuda_copy_sync_stats.cpp cuda_copy_sync_stats.h
         tabipb_wrap/TABIPBWrap.cpp tabipb_wrap/TABIPBWrap.h
         tabipb_wrap/TABIPBStruct.h tabipb_wrap/params_apbs_ctor.cpp
         tabipb_wrap/molecule_apbs_ctor.cpp)

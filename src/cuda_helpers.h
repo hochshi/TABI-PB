@@ -4,9 +4,11 @@
 #include <cuda_runtime.h>
 
 #include <cstddef>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
+#include "cuda_copy_sync_stats.h"
 #include "cuda_state.h"
 
 #define CUDA_CHECK(call)                                                        \
@@ -31,7 +33,13 @@
 
 #define CUDA_SYNC_AND_CHECK()                                                   \
     do {                                                                        \
+        const auto t0__ = std::chrono::steady_clock::now();                     \
         CUDA_CHECK(cudaDeviceSynchronize());                                    \
+        const auto t1__ = std::chrono::steady_clock::now();                     \
+        tabipb_cuda_stats::record_device_sync(                                  \
+            static_cast<std::uint64_t>(                                         \
+                std::chrono::duration_cast<std::chrono::nanoseconds>(           \
+                    t1__ - t0__).count()));                                     \
     } while (0)
 
 #define CUDA_MALLOC_OR_DIE(ptr, bytes)                                          \
@@ -49,7 +57,48 @@
 
 #define CUDA_MEMCPY_ASYNC(dst, src, bytes, kind, stream)                        \
     do {                                                                        \
+        const auto t0__ = std::chrono::steady_clock::now();                     \
         CUDA_CHECK(cudaMemcpyAsync((dst), (src), (bytes), (kind), (stream)));   \
+        const auto t1__ = std::chrono::steady_clock::now();                     \
+        tabipb_cuda_stats::record_memcpy(                                       \
+            (kind), (bytes),                                                    \
+            static_cast<std::uint64_t>(                                         \
+                std::chrono::duration_cast<std::chrono::nanoseconds>(           \
+                    t1__ - t0__).count()));                                     \
+    } while (0)
+
+#define CUDA_MEMCPY(dst, src, bytes, kind)                                      \
+    do {                                                                        \
+        const auto t0__ = std::chrono::steady_clock::now();                     \
+        CUDA_CHECK(cudaMemcpy((dst), (src), (bytes), (kind)));                  \
+        const auto t1__ = std::chrono::steady_clock::now();                     \
+        tabipb_cuda_stats::record_memcpy(                                       \
+            (kind), (bytes),                                                    \
+            static_cast<std::uint64_t>(                                         \
+                std::chrono::duration_cast<std::chrono::nanoseconds>(           \
+                    t1__ - t0__).count()));                                     \
+    } while (0)
+
+#define CUDA_STREAM_SYNC_AND_CHECK(stream)                                      \
+    do {                                                                        \
+        const auto t0__ = std::chrono::steady_clock::now();                     \
+        CUDA_CHECK(cudaStreamSynchronize((stream)));                            \
+        const auto t1__ = std::chrono::steady_clock::now();                     \
+        tabipb_cuda_stats::record_stream_sync(                                  \
+            static_cast<std::uint64_t>(                                         \
+                std::chrono::duration_cast<std::chrono::nanoseconds>(           \
+                    t1__ - t0__).count()));                                     \
+    } while (0)
+
+#define CUDA_EVENT_SYNC_AND_CHECK(event)                                        \
+    do {                                                                        \
+        const auto t0__ = std::chrono::steady_clock::now();                     \
+        CUDA_CHECK(cudaEventSynchronize((event)));                              \
+        const auto t1__ = std::chrono::steady_clock::now();                     \
+        tabipb_cuda_stats::record_event_sync(                                   \
+            static_cast<std::uint64_t>(                                         \
+                std::chrono::duration_cast<std::chrono::nanoseconds>(           \
+                    t1__ - t0__).count()));                                     \
     } while (0)
 
 #define CUDA_ZERO_ASYNC(ptr, bytes, stream)                                     \

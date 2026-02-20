@@ -13,12 +13,12 @@
 
 namespace {
 
+#ifdef USE_CUDA_CC
 bool cuda_require_all_enabled() {
   const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
   return (require_all_env && std::strcmp(require_all_env, "0") != 0);
 }
 
-#ifdef USE_CUDA_CC
 void abort_require_all(const char* step) {
   std::cerr << "[CUDA_SOLVATION] require_all set but CUDA path unavailable in "
             << step << ". Aborting to avoid CPU fallback.\n";
@@ -111,34 +111,17 @@ SolvationEnergyCompute::SolvationEnergyCompute(std::vector<double>& potential,
 
 double SolvationEnergyCompute::compute()
 {
-    const char* debug_env = std::getenv("TABIPB_DEBUG_PROGRESS");
-    const bool require_all_dbg = cuda_require_all_enabled();
-    const bool debug_progress = require_all_dbg ||
-                                (debug_env && std::strcmp(debug_env, "0") != 0);
-    if (debug_progress) {
-        std::cerr << "[DEBUG] SolvationEnergyCompute::compute: copyin begin\n";
-    }
     SolvationEnergyCompute::copyin_clusters_to_device();
 #ifdef USE_CUDA_CC
+    const bool require_all_dbg = cuda_require_all_enabled();
     if (require_all_dbg && !validate_device_buffers_common_()) {
         std::cerr << "[CUDA_SOLVATION] require_all set but device buffers not ready. "
                   << "Aborting to avoid CPU fallback.\n";
         std::exit(1);
     }
 #endif
-    if (debug_progress) {
-        std::cerr << "[DEBUG] SolvationEnergyCompute::compute: copyin end\n";
-        std::cerr << "[DEBUG] SolvationEnergyCompute::compute: run begin\n";
-    }
     SolvationEnergyCompute::run();
-    if (debug_progress) {
-        std::cerr << "[DEBUG] SolvationEnergyCompute::compute: run end\n";
-        std::cerr << "[DEBUG] SolvationEnergyCompute::compute: delete begin\n";
-    }
     SolvationEnergyCompute::delete_clusters_from_device();
-    if (debug_progress) {
-        std::cerr << "[DEBUG] SolvationEnergyCompute::compute: delete end\n";
-    }
 
     solvation_energy_ = solv_eng_vec_[0];
 
