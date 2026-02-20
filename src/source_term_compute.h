@@ -4,6 +4,7 @@
 #include "molecule.h"
 #include "interp_pts.h"
 #include "tree_compute.h"
+#include <cstdint>
 
 #ifdef USE_CUDA_CC
 #include "cuda_state.h"
@@ -56,6 +57,19 @@ private:
     mutable std::vector<int> exact_idx_z_;
     mutable std::vector<double> denominator_;
 
+    std::vector<std::uint32_t> target_node_begin_u32_;
+    std::vector<std::uint32_t> target_node_end_u32_;
+    std::vector<std::uint32_t> source_node_begin_u32_;
+    std::vector<std::uint32_t> source_node_end_u32_;
+    std::vector<std::uint32_t> pp_offsets_u32_;
+    std::vector<std::uint32_t> pp_sources_u32_;
+    std::vector<std::uint32_t> pc_offsets_u32_;
+    std::vector<std::uint32_t> pc_sources_u32_;
+    std::vector<std::uint32_t> cp_offsets_u32_;
+    std::vector<std::uint32_t> cp_sources_u32_;
+    std::vector<std::uint32_t> cc_offsets_u32_;
+    std::vector<std::uint32_t> cc_sources_u32_;
+
 #ifdef USE_CUDA_CC
     class DeviceBuffers {
         friend class SourceTermCompute;
@@ -71,6 +85,18 @@ private:
         int* exact_idx_y_dev = nullptr;
         int* exact_idx_z_dev = nullptr;
         double* denominator_dev = nullptr;
+        std::uint32_t* target_node_begin_dev = nullptr;
+        std::uint32_t* target_node_end_dev = nullptr;
+        std::uint32_t* source_node_begin_dev = nullptr;
+        std::uint32_t* source_node_end_dev = nullptr;
+        std::uint32_t* pp_offsets_dev = nullptr;
+        std::uint32_t* pp_sources_dev = nullptr;
+        std::uint32_t* pc_offsets_dev = nullptr;
+        std::uint32_t* pc_sources_dev = nullptr;
+        std::uint32_t* cp_offsets_dev = nullptr;
+        std::uint32_t* cp_sources_dev = nullptr;
+        std::uint32_t* cc_offsets_dev = nullptr;
+        std::uint32_t* cc_sources_dev = nullptr;
 
         std::size_t q_num = 0;
         std::size_t p_num = 0;
@@ -80,6 +106,16 @@ private:
         std::size_t mol_weights_num = 0;
         std::size_t elem_weights_num = 0;
         std::size_t scratch_num = 0;
+        std::size_t target_nodes_num = 0;
+        std::size_t source_nodes_num = 0;
+        std::size_t pp_offsets_num = 0;
+        std::size_t pp_sources_num = 0;
+        std::size_t pc_offsets_num = 0;
+        std::size_t pc_sources_num = 0;
+        std::size_t cp_offsets_num = 0;
+        std::size_t cp_sources_num = 0;
+        std::size_t cc_offsets_num = 0;
+        std::size_t cc_sources_num = 0;
         bool ready = false;
     };
 
@@ -94,6 +130,7 @@ private:
     bool validate_device_buffers_downward_pass_() const;
     void copyin_clusters_to_device_cuda_() const;
     void delete_clusters_from_device_cuda_() const;
+    bool run_batched_interactions_cuda_();
 #endif
 
     

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 extern "C" {
 
@@ -129,6 +130,96 @@ void source_term_up_cuda(
     int num_mol_interp_charges_per_node,
     std::size_t particle_start,
     std::size_t num_particles,
+    void* stream);
+
+void source_term_pp_batched_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_nx,
+    const double* elem_ny,
+    const double* elem_nz,
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* pp_offsets,
+    const std::uint32_t* pp_sources,
+    double one_over_4pi_eps_solute,
+    double* source_term,
+    std::size_t source_term_offset,
+    void* stream);
+
+void source_term_pc_batched_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_nx,
+    const double* elem_ny,
+    const double* elem_nz,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* pc_offsets,
+    const std::uint32_t* pc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double one_over_4pi_eps_solute,
+    double* source_term,
+    std::size_t source_term_offset,
+    void* stream);
+
+void source_term_cp_batched_cuda(
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* cp_offsets,
+    const std::uint32_t* cp_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    double one_over_4pi_eps_solute,
+    void* stream);
+
+void source_term_cc_batched_cuda(
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    std::size_t num_target_nodes,
+    const std::uint32_t* cc_offsets,
+    const std::uint32_t* cc_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double one_over_4pi_eps_solute,
     void* stream);
 
 } // extern "C"
