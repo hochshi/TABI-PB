@@ -28,7 +28,7 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
     timers_.matrix_vector.start();
 
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     if (device_state_ != CudaDeviceState::DeviceMapped || !device_buffers_.ready) {
         if (require_all) {
             std::cerr << "[CUDA_BE] require_all set but CUDA pointers not cached. "

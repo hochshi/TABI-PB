@@ -10,7 +10,7 @@
 void Molecule::copyin_to_device_cuda_() const {
   const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
   const bool require_all =
-      (require_all_env && std::strcmp(require_all_env, "0") != 0);
+      !(require_all_env && std::strcmp(require_all_env, "0") == 0);
 
   const std::size_t num_particles = num_;
   const std::size_t x_num = x_.size();

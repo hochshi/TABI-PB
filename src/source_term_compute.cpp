@@ -142,7 +142,7 @@ void SourceTermCompute::compute()
 #if defined(USE_CUDA_CC)
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all =
-        (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     if (require_all && !validate_device_buffers_common_()) {
         std::cerr << "[CUDA_SOURCE_TERM] require_all set but device buffers not ready. "
                   << "Aborting to avoid CPU/OpenACC fallback.\n";

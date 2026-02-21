@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <cfloat>
+#include <cstdint>
 
 #include "constants.h"
 #include "solvation_energy_cuda.h"
@@ -315,6 +316,370 @@ __global__ void solvation_cc_kernel(
     atomicAdd(&elem_clusters_p_dx[jj], pot_temp_dx);
     atomicAdd(&elem_clusters_p_dy[jj], pot_temp_dy);
     atomicAdd(&elem_clusters_p_dz[jj], pot_temp_dz);
+}
+
+__global__ void solvation_pp_batched_kernel(
+    const double* __restrict elem_x,
+    const double* __restrict elem_y,
+    const double* __restrict elem_z,
+    const double* __restrict elem_q_dx,
+    const double* __restrict elem_q_dy,
+    const double* __restrict elem_q_dz,
+    const double* __restrict elem_area,
+    const double* __restrict mol_x,
+    const double* __restrict mol_y,
+    const double* __restrict mol_z,
+    const double* __restrict mol_q,
+    const double* __restrict potential,
+    std::size_t potential_offset,
+    const std::uint32_t* __restrict target_node_begin,
+    const std::uint32_t* __restrict target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict source_node_begin,
+    const std::uint32_t* __restrict source_node_end,
+    const std::uint32_t* __restrict pp_offsets,
+    const std::uint32_t* __restrict pp_sources,
+    double eps,
+    double kappa,
+    double* __restrict solv_eng)
+{
+    std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t target_begin = target_node_begin[target_node_idx];
+    const std::uint32_t target_end = target_node_end[target_node_idx];
+    const std::uint32_t list_begin = pp_offsets[target_node_idx];
+    const std::uint32_t list_end = pp_offsets[target_node_idx + 1];
+
+    for (std::uint32_t j = target_begin + static_cast<std::uint32_t>(threadIdx.x);
+         j < target_end; j += static_cast<std::uint32_t>(blockDim.x)) {
+        const double target_x = elem_x[j];
+        const double target_y = elem_y[j];
+        const double target_z = elem_z[j];
+        const double area = elem_area[j];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::uint32_t source_node_idx = pp_sources[list_idx];
+            const std::uint32_t source_begin = source_node_begin[source_node_idx];
+            const std::uint32_t source_end = source_node_end[source_node_idx];
+
+            double pot_temp_dd = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
+            for (std::uint32_t k = source_begin; k < source_end; ++k) {
+                const double dx = target_x - mol_x[k];
+                const double dy = target_y - mol_y[k];
+                const double dz = target_z - mol_z[k];
+
+                const double r = sqrt(dx * dx + dy * dy + dz * dz);
+                const double rinv = 1.0 / r;
+                const double G0 = constants::ONE_OVER_4PI * rinv;
+                const double expkr = exp(-kappa * r);
+
+                const double L2 = G0 * (1.0 - expkr);
+                const double L1 = G0 * rinv * rinv * (1.0 - eps * expkr * (1.0 + kappa * r));
+
+                const double q = mol_q[k];
+                pot_temp_dd += L2 * q;
+                pot_temp_dx += L1 * q * dx;
+                pot_temp_dy += L1 * q * dy;
+                pot_temp_dz += L1 * q * dz;
+            }
+
+            const double pot_temp_1 = potential[j + potential_offset] * area * pot_temp_dd;
+            const double pot_temp_2 = potential[j] * area *
+                                      (elem_q_dx[j] * pot_temp_dx +
+                                       elem_q_dy[j] * pot_temp_dy +
+                                       elem_q_dz[j] * pot_temp_dz);
+            atomicAdd(solv_eng, pot_temp_1 + pot_temp_2);
+        }
+    }
+}
+
+__global__ void solvation_pc_batched_kernel(
+    const double* __restrict elem_x,
+    const double* __restrict elem_y,
+    const double* __restrict elem_z,
+    const double* __restrict elem_q_dx,
+    const double* __restrict elem_q_dy,
+    const double* __restrict elem_q_dz,
+    const double* __restrict elem_area,
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    const double* __restrict mol_clusters_q,
+    const double* __restrict potential,
+    std::size_t potential_offset,
+    const std::uint32_t* __restrict target_node_begin,
+    const std::uint32_t* __restrict target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict pc_offsets,
+    const std::uint32_t* __restrict pc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double eps,
+    double kappa,
+    double* __restrict solv_eng)
+{
+    std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t target_begin = target_node_begin[target_node_idx];
+    const std::uint32_t target_end = target_node_end[target_node_idx];
+    const std::uint32_t list_begin = pc_offsets[target_node_idx];
+    const std::uint32_t list_end = pc_offsets[target_node_idx + 1];
+
+    for (std::uint32_t j = target_begin + static_cast<std::uint32_t>(threadIdx.x);
+         j < target_end; j += static_cast<std::uint32_t>(blockDim.x)) {
+        const double target_x = elem_x[j];
+        const double target_y = elem_y[j];
+        const double target_z = elem_z[j];
+        const double area = elem_area[j];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::size_t source_node_idx = static_cast<std::size_t>(pc_sources[list_idx]);
+            const std::size_t interp_pts_begin =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+            const std::size_t charges_begin =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_charges_per_node);
+
+            double pot_temp_dd = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
+            for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
+                for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
+                    for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
+                        const std::size_t kk = charges_begin
+                                             + static_cast<std::size_t>(k1) * num_mol_interp_pts_per_node *
+                                                   num_mol_interp_pts_per_node
+                                             + static_cast<std::size_t>(k2) * num_mol_interp_pts_per_node
+                                             + static_cast<std::size_t>(k3);
+
+                        const double dx = target_x - mol_clusters_x[interp_pts_begin + static_cast<std::size_t>(k1)];
+                        const double dy = target_y - mol_clusters_y[interp_pts_begin + static_cast<std::size_t>(k2)];
+                        const double dz = target_z - mol_clusters_z[interp_pts_begin + static_cast<std::size_t>(k3)];
+
+                        const double r = sqrt(dx * dx + dy * dy + dz * dz);
+                        const double rinv = 1.0 / r;
+                        const double G0 = constants::ONE_OVER_4PI * rinv;
+                        const double expkr = exp(-kappa * r);
+
+                        const double L2 = G0 * (1.0 - expkr);
+                        const double L1 = G0 * rinv * rinv * (1.0 - eps * expkr * (1.0 + kappa * r));
+
+                        const double q = mol_clusters_q[kk];
+                        pot_temp_dd += L2 * q;
+                        pot_temp_dx += L1 * q * dx;
+                        pot_temp_dy += L1 * q * dy;
+                        pot_temp_dz += L1 * q * dz;
+                    }
+                }
+            }
+
+            const double pot_temp_1 = potential[j + potential_offset] * area * pot_temp_dd;
+            const double pot_temp_2 = potential[j] * area *
+                                      (elem_q_dx[j] * pot_temp_dx +
+                                       elem_q_dy[j] * pot_temp_dy +
+                                       elem_q_dz[j] * pot_temp_dz);
+            atomicAdd(solv_eng, pot_temp_1 + pot_temp_2);
+        }
+    }
+}
+
+__global__ void solvation_cp_batched_kernel(
+    const double* __restrict mol_x,
+    const double* __restrict mol_y,
+    const double* __restrict mol_z,
+    const double* __restrict mol_q,
+    const double* __restrict elem_clusters_x,
+    const double* __restrict elem_clusters_y,
+    const double* __restrict elem_clusters_z,
+    double* __restrict elem_clusters_p,
+    double* __restrict elem_clusters_p_dx,
+    double* __restrict elem_clusters_p_dy,
+    double* __restrict elem_clusters_p_dz,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict source_node_begin,
+    const std::uint32_t* __restrict source_node_end,
+    const std::uint32_t* __restrict cp_offsets,
+    const std::uint32_t* __restrict cp_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    double eps,
+    double kappa)
+{
+    const std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t list_begin = cp_offsets[target_node_idx];
+    const std::uint32_t list_end = cp_offsets[target_node_idx + 1];
+    const std::size_t target_cluster_interp_pts_begin =
+        target_node_idx * static_cast<std::size_t>(num_elem_interp_pts_per_node);
+    const std::size_t target_cluster_interp_potentials_begin =
+        target_node_idx * static_cast<std::size_t>(num_elem_interp_potentials_per_node);
+    const std::size_t total = static_cast<std::size_t>(num_elem_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_elem_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_elem_interp_pts_per_node);
+
+    for (std::size_t idx = static_cast<std::size_t>(threadIdx.x);
+         idx < total; idx += static_cast<std::size_t>(blockDim.x)) {
+        const int j1 = static_cast<int>(idx / (num_elem_interp_pts_per_node * num_elem_interp_pts_per_node));
+        const int rem = static_cast<int>(idx % (num_elem_interp_pts_per_node * num_elem_interp_pts_per_node));
+        const int j2 = rem / num_elem_interp_pts_per_node;
+        const int j3 = rem % num_elem_interp_pts_per_node;
+
+        const std::size_t jj = target_cluster_interp_potentials_begin
+                             + static_cast<std::size_t>(j1) * num_elem_interp_pts_per_node *
+                                   num_elem_interp_pts_per_node
+                             + static_cast<std::size_t>(j2) * num_elem_interp_pts_per_node
+                             + static_cast<std::size_t>(j3);
+
+        const double target_x = elem_clusters_x[target_cluster_interp_pts_begin + static_cast<std::size_t>(j1)];
+        const double target_y = elem_clusters_y[target_cluster_interp_pts_begin + static_cast<std::size_t>(j2)];
+        const double target_z = elem_clusters_z[target_cluster_interp_pts_begin + static_cast<std::size_t>(j3)];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::uint32_t source_node_idx = cp_sources[list_idx];
+            const std::uint32_t source_begin = source_node_begin[source_node_idx];
+            const std::uint32_t source_end = source_node_end[source_node_idx];
+
+            double pot_temp_dd = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
+            for (std::uint32_t k = source_begin; k < source_end; ++k) {
+                const double dx = target_x - mol_x[k];
+                const double dy = target_y - mol_y[k];
+                const double dz = target_z - mol_z[k];
+
+                const double r = sqrt(dx * dx + dy * dy + dz * dz);
+                const double rinv = 1.0 / r;
+                const double G0 = constants::ONE_OVER_4PI * rinv;
+                const double expkr = exp(-kappa * r);
+
+                const double L2 = G0 * (1.0 - expkr);
+                const double L1 = G0 * rinv * rinv * (1.0 - eps * expkr * (1.0 + kappa * r));
+
+                const double q = mol_q[k];
+                pot_temp_dd += L2 * q;
+                pot_temp_dx += L1 * q * dx;
+                pot_temp_dy += L1 * q * dy;
+                pot_temp_dz += L1 * q * dz;
+            }
+
+            elem_clusters_p[jj] += pot_temp_dd;
+            elem_clusters_p_dx[jj] += pot_temp_dx;
+            elem_clusters_p_dy[jj] += pot_temp_dy;
+            elem_clusters_p_dz[jj] += pot_temp_dz;
+        }
+    }
+}
+
+__global__ void solvation_cc_batched_kernel(
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    const double* __restrict mol_clusters_q,
+    const double* __restrict elem_clusters_x,
+    const double* __restrict elem_clusters_y,
+    const double* __restrict elem_clusters_z,
+    double* __restrict elem_clusters_p,
+    double* __restrict elem_clusters_p_dx,
+    double* __restrict elem_clusters_p_dy,
+    double* __restrict elem_clusters_p_dz,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict cc_offsets,
+    const std::uint32_t* __restrict cc_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double eps,
+    double kappa)
+{
+    const std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t list_begin = cc_offsets[target_node_idx];
+    const std::uint32_t list_end = cc_offsets[target_node_idx + 1];
+    const std::size_t target_cluster_interp_pts_begin =
+        target_node_idx * static_cast<std::size_t>(num_elem_interp_pts_per_node);
+    const std::size_t target_cluster_interp_potentials_begin =
+        target_node_idx * static_cast<std::size_t>(num_elem_interp_potentials_per_node);
+    const std::size_t total = static_cast<std::size_t>(num_elem_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_elem_interp_pts_per_node) *
+                              static_cast<std::size_t>(num_elem_interp_pts_per_node);
+
+    for (std::size_t idx = static_cast<std::size_t>(threadIdx.x);
+         idx < total; idx += static_cast<std::size_t>(blockDim.x)) {
+        const int j1 = static_cast<int>(idx / (num_elem_interp_pts_per_node * num_elem_interp_pts_per_node));
+        const int rem = static_cast<int>(idx % (num_elem_interp_pts_per_node * num_elem_interp_pts_per_node));
+        const int j2 = rem / num_elem_interp_pts_per_node;
+        const int j3 = rem % num_elem_interp_pts_per_node;
+
+        const std::size_t jj = target_cluster_interp_potentials_begin
+                             + static_cast<std::size_t>(j1) * num_elem_interp_pts_per_node *
+                                   num_elem_interp_pts_per_node
+                             + static_cast<std::size_t>(j2) * num_elem_interp_pts_per_node
+                             + static_cast<std::size_t>(j3);
+
+        const double target_x = elem_clusters_x[target_cluster_interp_pts_begin + static_cast<std::size_t>(j1)];
+        const double target_y = elem_clusters_y[target_cluster_interp_pts_begin + static_cast<std::size_t>(j2)];
+        const double target_z = elem_clusters_z[target_cluster_interp_pts_begin + static_cast<std::size_t>(j3)];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::size_t source_node_idx = static_cast<std::size_t>(cc_sources[list_idx]);
+            const std::size_t source_cluster_interp_pts_begin =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+            const std::size_t source_cluster_interp_charges_begin =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_charges_per_node);
+
+            double pot_temp_dd = 0.0;
+            double pot_temp_dx = 0.0;
+            double pot_temp_dy = 0.0;
+            double pot_temp_dz = 0.0;
+
+            for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
+                for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
+                    for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
+                        const std::size_t kk = source_cluster_interp_charges_begin
+                                             + static_cast<std::size_t>(k1) * num_mol_interp_pts_per_node *
+                                                   num_mol_interp_pts_per_node
+                                             + static_cast<std::size_t>(k2) * num_mol_interp_pts_per_node
+                                             + static_cast<std::size_t>(k3);
+
+                        const double dx = target_x - mol_clusters_x[source_cluster_interp_pts_begin + static_cast<std::size_t>(k1)];
+                        const double dy = target_y - mol_clusters_y[source_cluster_interp_pts_begin + static_cast<std::size_t>(k2)];
+                        const double dz = target_z - mol_clusters_z[source_cluster_interp_pts_begin + static_cast<std::size_t>(k3)];
+
+                        const double r = sqrt(dx * dx + dy * dy + dz * dz);
+                        const double rinv = 1.0 / r;
+                        const double G0 = constants::ONE_OVER_4PI * rinv;
+                        const double expkr = exp(-kappa * r);
+
+                        const double L2 = G0 * (1.0 - expkr);
+                        const double L1 = G0 * rinv * rinv * (1.0 - eps * expkr * (1.0 + kappa * r));
+
+                        const double q = mol_clusters_q[kk];
+                        pot_temp_dd += L2 * q;
+                        pot_temp_dx += L1 * q * dx;
+                        pot_temp_dy += L1 * q * dy;
+                        pot_temp_dz += L1 * q * dz;
+                    }
+                }
+            }
+
+            elem_clusters_p[jj] += pot_temp_dd;
+            elem_clusters_p_dx[jj] += pot_temp_dx;
+            elem_clusters_p_dy[jj] += pot_temp_dy;
+            elem_clusters_p_dz[jj] += pot_temp_dz;
+        }
+    }
 }
 
 __global__ void solvation_up_denom_kernel(
@@ -741,6 +1106,164 @@ extern "C" void solvation_cc_cuda(
         elem_clusters_x, elem_clusters_y, elem_clusters_z,
         elem_clusters_p, elem_clusters_p_dx, elem_clusters_p_dy, elem_clusters_p_dz,
         target_node_idx, source_node_idx,
+        num_elem_interp_pts_per_node,
+        num_elem_interp_potentials_per_node,
+        num_mol_interp_pts_per_node,
+        num_mol_interp_charges_per_node,
+        eps, kappa);
+}
+
+extern "C" void solvation_pp_batched_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_q_dx,
+    const double* elem_q_dy,
+    const double* elem_q_dz,
+    const double* elem_area,
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const double* potential,
+    std::size_t potential_offset,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* pp_offsets,
+    const std::uint32_t* pp_sources,
+    double eps,
+    double kappa,
+    double* solv_eng,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    constexpr int kBlockSize = 128;
+    int grid = static_cast<int>(num_target_nodes);
+    solvation_pp_batched_kernel<<<grid, kBlockSize, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
+        elem_x, elem_y, elem_z,
+        elem_q_dx, elem_q_dy, elem_q_dz,
+        elem_area,
+        mol_x, mol_y, mol_z, mol_q,
+        potential, potential_offset,
+        target_node_begin, target_node_end, num_target_nodes,
+        source_node_begin, source_node_end,
+        pp_offsets, pp_sources,
+        eps, kappa, solv_eng);
+}
+
+extern "C" void solvation_pc_batched_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_q_dx,
+    const double* elem_q_dy,
+    const double* elem_q_dz,
+    const double* elem_area,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    const double* potential,
+    std::size_t potential_offset,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* pc_offsets,
+    const std::uint32_t* pc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double eps,
+    double kappa,
+    double* solv_eng,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    constexpr int kBlockSize = 128;
+    int grid = static_cast<int>(num_target_nodes);
+    solvation_pc_batched_kernel<<<grid, kBlockSize, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
+        elem_x, elem_y, elem_z,
+        elem_q_dx, elem_q_dy, elem_q_dz,
+        elem_area,
+        mol_clusters_x, mol_clusters_y, mol_clusters_z, mol_clusters_q,
+        potential, potential_offset,
+        target_node_begin, target_node_end, num_target_nodes,
+        pc_offsets, pc_sources,
+        num_mol_interp_pts_per_node, num_mol_interp_charges_per_node,
+        eps, kappa, solv_eng);
+}
+
+extern "C" void solvation_cp_batched_cuda(
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* cp_offsets,
+    const std::uint32_t* cp_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    double eps,
+    double kappa,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    constexpr int kBlockSize = 128;
+    int grid = static_cast<int>(num_target_nodes);
+    solvation_cp_batched_kernel<<<grid, kBlockSize, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
+        mol_x, mol_y, mol_z, mol_q,
+        elem_clusters_x, elem_clusters_y, elem_clusters_z,
+        elem_clusters_p, elem_clusters_p_dx, elem_clusters_p_dy, elem_clusters_p_dz,
+        num_target_nodes,
+        source_node_begin, source_node_end,
+        cp_offsets, cp_sources,
+        num_elem_interp_pts_per_node, num_elem_interp_potentials_per_node,
+        eps, kappa);
+}
+
+extern "C" void solvation_cc_batched_cuda(
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    std::size_t num_target_nodes,
+    const std::uint32_t* cc_offsets,
+    const std::uint32_t* cc_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double eps,
+    double kappa,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    constexpr int kBlockSize = 128;
+    int grid = static_cast<int>(num_target_nodes);
+    solvation_cc_batched_kernel<<<grid, kBlockSize, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
+        mol_clusters_x, mol_clusters_y, mol_clusters_z, mol_clusters_q,
+        elem_clusters_x, elem_clusters_y, elem_clusters_z,
+        elem_clusters_p, elem_clusters_p_dx, elem_clusters_p_dy, elem_clusters_p_dz,
+        num_target_nodes,
+        cc_offsets, cc_sources,
         num_elem_interp_pts_per_node,
         num_elem_interp_potentials_per_node,
         num_mol_interp_pts_per_node,

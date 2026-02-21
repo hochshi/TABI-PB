@@ -144,9 +144,9 @@ int BoundaryElement::gmres_impl_(const GmresView& view, bool enable_cuda_backend
     const char* gmres_env = std::getenv("TABIPB_CUDA_GMRES");
     const char* require_env = std::getenv("TABIPB_CUDA_REQUIRE_GMRES");
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const bool require_gmres = require_all ||
-                               (require_env && std::strcmp(require_env, "0") != 0);
+                               !(require_env && std::strcmp(require_env, "0") == 0);
     use_cuda_gmres = enable_cuda_backend &&
                      (require_gmres || (gmres_env && std::strcmp(gmres_env, "0") != 0));
     (void)std::getenv("TABIPB_CUDA_GMRES_DEBUG_MAP");

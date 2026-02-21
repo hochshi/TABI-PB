@@ -53,7 +53,7 @@ void InterpolationPoints::compute_all_interp_pts()
 
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     if (validate_device_buffers_compute_interp_pts_()) {
         const auto interp_view = device_view();
         if (interp_pts_try_compute_cuda(bounds.data(), num_nodes, num_interp_pts_per_node,
@@ -86,7 +86,7 @@ void InterpolationPoints::copyin_to_device() const
     copyin_to_device_cuda_();
     const std::size_t num_interp_pts = num_interp_pts_;
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     if (require_all && num_interp_pts > 0) {
         if (!validate_device_buffers_compute_interp_pts_()) {
             std::fprintf(stderr,

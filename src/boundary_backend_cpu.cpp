@@ -26,7 +26,7 @@ void BoundaryElement::matrix_vector_cpu_(double alpha, const double* __restrict 
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
         const bool require_all =
-            (require_all_env && std::strcmp(require_all_env, "0") != 0);
+            !(require_all_env && std::strcmp(require_all_env, "0") == 0);
         const char* fused_env = std::getenv("TABIPB_CUDA_PPPC_FUSED");
         const char* require_fused_env = std::getenv("TABIPB_CUDA_REQUIRE_PPPC");
         const bool require_fused =

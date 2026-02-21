@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 extern "C" {
 
@@ -139,6 +140,104 @@ void solvation_down_cuda(
     std::size_t particle_start,
     std::size_t num_particles,
     double* solv_eng,
+    void* stream);
+
+void solvation_pp_batched_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_q_dx,
+    const double* elem_q_dy,
+    const double* elem_q_dz,
+    const double* elem_area,
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const double* potential,
+    std::size_t potential_offset,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* pp_offsets,
+    const std::uint32_t* pp_sources,
+    double eps,
+    double kappa,
+    double* solv_eng,
+    void* stream);
+
+void solvation_pc_batched_cuda(
+    const double* elem_x,
+    const double* elem_y,
+    const double* elem_z,
+    const double* elem_q_dx,
+    const double* elem_q_dy,
+    const double* elem_q_dz,
+    const double* elem_area,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    const double* potential,
+    std::size_t potential_offset,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* pc_offsets,
+    const std::uint32_t* pc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double eps,
+    double kappa,
+    double* solv_eng,
+    void* stream);
+
+void solvation_cp_batched_cuda(
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* cp_offsets,
+    const std::uint32_t* cp_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    double eps,
+    double kappa,
+    void* stream);
+
+void solvation_cc_batched_cuda(
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    const double* elem_clusters_x,
+    const double* elem_clusters_y,
+    const double* elem_clusters_z,
+    double* elem_clusters_p,
+    double* elem_clusters_p_dx,
+    double* elem_clusters_p_dy,
+    double* elem_clusters_p_dz,
+    std::size_t num_target_nodes,
+    const std::uint32_t* cc_offsets,
+    const std::uint32_t* cc_sources,
+    int num_elem_interp_pts_per_node,
+    int num_elem_interp_potentials_per_node,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double eps,
+    double kappa,
     void* stream);
 
 } // extern "C"

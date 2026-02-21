@@ -720,7 +720,7 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 #ifdef USE_CUDA_CC
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
         const char* require_pp_env = std::getenv("TABIPB_CUDA_REQUIRE_PP");
         const bool require_cuda_pp = require_all || (require_pp_env && std::strcmp(require_pp_env, "0") != 0);
 
@@ -770,7 +770,7 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 #else
     {
         const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-        const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
         const char* require_pp_env = std::getenv("TABIPB_CUDA_REQUIRE_PP");
         if (require_all || (require_pp_env && std::strcmp(require_pp_env, "0") != 0)) {
             std::cerr << "[CUDA_PP] require set but binary was built without USE_CUDA_CC. "
@@ -939,7 +939,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
     std::size_t pc_offsets_num = pc_offsets_u32_.size();
     std::size_t pc_sources_num = pc_sources_u32_.size();
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const char* require_pc_env = std::getenv("TABIPB_CUDA_REQUIRE_PC");
     const bool require_cuda_pc = require_all || (require_pc_env && std::strcmp(require_pc_env, "0") != 0);
     const char* fused_env = std::getenv("TABIPB_CUDA_PPPC_FUSED");
@@ -1701,7 +1701,7 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
     if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const char* require_cuda_env = std::getenv("TABIPB_CUDA_REQUIRE_CC");
     const bool require_cuda_cc = require_all || (require_cuda_env && std::strcmp(require_cuda_env, "0") != 0);
     if (require_cuda_cc && num_interp_pts_per_node > kBatchedMaxInterpPts) {
@@ -2397,7 +2397,7 @@ void BoundaryElement::upward_pass()
         std::cerr << "[CUDA_UP] debug mode enabled\n";
     }
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const char* require_up_env = std::getenv("TABIPB_CUDA_REQUIRE_UPWARD");
     const bool require_cuda_upward = require_all || (require_up_env && std::strcmp(require_up_env, "0") != 0);
     if (require_cuda_upward && num_interp_pts_per_node > kMaxInterpPts) {
@@ -2732,7 +2732,7 @@ void BoundaryElement::downward_pass(double* __restrict potential)
 #ifdef USE_CUDA_CC
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     if (require_all && num_interp_pts_per_node > kMaxInterpPts) {
         std::cerr << "[CUDA_DOWN] require_all set but num_interp_pts_per_node="
                   << num_interp_pts_per_node
@@ -3018,7 +3018,7 @@ void BoundaryElement::clear_cluster_charges()
 
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const bool present_ok = validate_device_buffers_clear_cluster_charges_();
     if (present_ok) {
         void* stream = nullptr;
@@ -3065,7 +3065,7 @@ void BoundaryElement::clear_cluster_potentials()
 
 #ifdef USE_CUDA_CC
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = (require_all_env && std::strcmp(require_all_env, "0") != 0);
+    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const bool present_ok = validate_device_buffers_clear_cluster_potentials_();
     if (present_ok) {
         void* stream = nullptr;

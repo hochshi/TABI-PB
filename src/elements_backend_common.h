@@ -6,7 +6,7 @@
 
 inline bool elements_cuda_require_all() {
   const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-  return (require_all_env && std::strcmp(require_all_env, "0") != 0);
+  return !(require_all_env && std::strcmp(require_all_env, "0") == 0);
 }
 
 #endif

@@ -233,7 +233,7 @@ void CoulombicEnergyCompute::copyin_clusters_to_device_cuda_() const
 {
     const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
     const bool require_all =
-        (require_all_env && std::strcmp(require_all_env, "0") != 0);
+        !(require_all_env && std::strcmp(require_all_env, "0") == 0);
 
     const double* q_ptr = mol_interp_charge_.data();
     std::size_t q_num   = mol_interp_charge_.size();
