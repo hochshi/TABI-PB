@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <cfloat>
@@ -222,6 +223,249 @@ __global__ void coulombic_pp_kernel(
     }
 
     atomicAdd_double(coul_eng, pot_temp);
+}
+
+__global__ void coulombic_pp_batched_kernel(
+    const double* __restrict mol_x,
+    const double* __restrict mol_y,
+    const double* __restrict mol_z,
+    const double* __restrict mol_q,
+    double* __restrict coul_eng,
+    const std::uint32_t* __restrict target_node_begin,
+    const std::uint32_t* __restrict target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict source_node_begin,
+    const std::uint32_t* __restrict source_node_end,
+    const std::uint32_t* __restrict pp_offsets,
+    const std::uint32_t* __restrict pp_sources,
+    double inv_eps_solute)
+{
+    const std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t target_begin = target_node_begin[target_node_idx];
+    const std::uint32_t target_end = target_node_end[target_node_idx];
+    const std::uint32_t list_begin = pp_offsets[target_node_idx];
+    const std::uint32_t list_end = pp_offsets[target_node_idx + 1];
+
+    for (std::uint32_t j = target_begin + static_cast<std::uint32_t>(threadIdx.x);
+         j < target_end; j += static_cast<std::uint32_t>(blockDim.x)) {
+        const double target_x = mol_x[j];
+        const double target_y = mol_y[j];
+        const double target_z = mol_z[j];
+        const double target_q = mol_q[j];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::uint32_t source_node_idx = pp_sources[list_idx];
+            const std::uint32_t source_begin = source_node_begin[source_node_idx];
+            const std::uint32_t source_end = source_node_end[source_node_idx];
+
+            double pot_temp = 0.0;
+            for (std::uint32_t k = source_begin; k < source_end; ++k) {
+                const double dx = target_x - mol_x[k];
+                const double dy = target_y - mol_y[k];
+                const double dz = target_z - mol_z[k];
+                const double r2 = dx * dx + dy * dy + dz * dz;
+                if (r2 > 0.0) {
+                    pot_temp += target_q * mol_q[k] * inv_eps_solute / std::sqrt(r2);
+                }
+            }
+            atomicAdd_double(coul_eng, pot_temp);
+        }
+    }
+}
+
+__global__ void coulombic_pc_batched_kernel(
+    const double* __restrict mol_x,
+    const double* __restrict mol_y,
+    const double* __restrict mol_z,
+    const double* __restrict mol_q,
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    const double* __restrict mol_clusters_q,
+    double* __restrict coul_eng,
+    const std::uint32_t* __restrict target_node_begin,
+    const std::uint32_t* __restrict target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict pc_offsets,
+    const std::uint32_t* __restrict pc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double inv_eps_solute)
+{
+    const std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t target_begin = target_node_begin[target_node_idx];
+    const std::uint32_t target_end = target_node_end[target_node_idx];
+    const std::uint32_t list_begin = pc_offsets[target_node_idx];
+    const std::uint32_t list_end = pc_offsets[target_node_idx + 1];
+
+    for (std::uint32_t j = target_begin + static_cast<std::uint32_t>(threadIdx.x);
+         j < target_end; j += static_cast<std::uint32_t>(blockDim.x)) {
+        const double target_x = mol_x[j];
+        const double target_y = mol_y[j];
+        const double target_z = mol_z[j];
+        const double target_q = mol_q[j];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::size_t source_node_idx = static_cast<std::size_t>(pc_sources[list_idx]);
+            const std::size_t interp_pts_start =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+            const std::size_t charges_start =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_charges_per_node);
+
+            double pot_temp = 0.0;
+            for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
+                const double sx = mol_clusters_x[interp_pts_start + static_cast<std::size_t>(k1)];
+                for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
+                    const double sy = mol_clusters_y[interp_pts_start + static_cast<std::size_t>(k2)];
+                    for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
+                        const double sz = mol_clusters_z[interp_pts_start + static_cast<std::size_t>(k3)];
+                        const std::size_t kk = charges_start
+                                             + static_cast<std::size_t>(k1 * num_mol_interp_pts_per_node * num_mol_interp_pts_per_node)
+                                             + static_cast<std::size_t>(k2 * num_mol_interp_pts_per_node + k3);
+
+                        const double dx = target_x - sx;
+                        const double dy = target_y - sy;
+                        const double dz = target_z - sz;
+                        const double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        pot_temp += mol_clusters_q[kk] * inv_eps_solute / r;
+                    }
+                }
+            }
+
+            atomicAdd_double(coul_eng, pot_temp * target_q);
+        }
+    }
+}
+
+__global__ void coulombic_cp_batched_kernel(
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    double* __restrict mol_clusters_p,
+    const double* __restrict mol_x,
+    const double* __restrict mol_y,
+    const double* __restrict mol_z,
+    const double* __restrict mol_q,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict source_node_begin,
+    const std::uint32_t* __restrict source_node_end,
+    const std::uint32_t* __restrict cp_offsets,
+    const std::uint32_t* __restrict cp_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_potentials_per_node,
+    double inv_eps_solute)
+{
+    const std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t list_begin = cp_offsets[target_node_idx];
+    const std::uint32_t list_end = cp_offsets[target_node_idx + 1];
+    const std::size_t target_interp_pts_start =
+        target_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+    const std::size_t target_potentials_start =
+        target_node_idx * static_cast<std::size_t>(num_mol_interp_potentials_per_node);
+    const std::size_t total = static_cast<std::size_t>(num_mol_interp_potentials_per_node);
+
+    for (std::size_t t = static_cast<std::size_t>(threadIdx.x);
+         t < total; t += static_cast<std::size_t>(blockDim.x)) {
+        const int p = num_mol_interp_pts_per_node;
+        const std::size_t j1 = t / static_cast<std::size_t>(p * p);
+        const std::size_t j2 = (t / static_cast<std::size_t>(p)) % static_cast<std::size_t>(p);
+        const std::size_t j3 = t % static_cast<std::size_t>(p);
+        const std::size_t jj = target_potentials_start + t;
+
+        const double target_x = mol_clusters_x[target_interp_pts_start + j1];
+        const double target_y = mol_clusters_y[target_interp_pts_start + j2];
+        const double target_z = mol_clusters_z[target_interp_pts_start + j3];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::uint32_t source_node_idx = cp_sources[list_idx];
+            const std::uint32_t source_begin = source_node_begin[source_node_idx];
+            const std::uint32_t source_end = source_node_end[source_node_idx];
+
+            double pot_temp = 0.0;
+            for (std::uint32_t k = source_begin; k < source_end; ++k) {
+                const double dx = target_x - mol_x[k];
+                const double dy = target_y - mol_y[k];
+                const double dz = target_z - mol_z[k];
+                const double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                pot_temp += mol_q[k] * inv_eps_solute / r;
+            }
+            mol_clusters_p[jj] += pot_temp;
+        }
+    }
+}
+
+__global__ void coulombic_cc_batched_kernel(
+    const double* __restrict mol_clusters_x,
+    const double* __restrict mol_clusters_y,
+    const double* __restrict mol_clusters_z,
+    const double* __restrict mol_clusters_q,
+    double* __restrict mol_clusters_p,
+    std::size_t num_target_nodes,
+    const std::uint32_t* __restrict cc_offsets,
+    const std::uint32_t* __restrict cc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    int num_mol_interp_potentials_per_node,
+    double inv_eps_solute)
+{
+    const std::size_t target_node_idx = static_cast<std::size_t>(blockIdx.x);
+    if (target_node_idx >= num_target_nodes) return;
+
+    const std::uint32_t list_begin = cc_offsets[target_node_idx];
+    const std::uint32_t list_end = cc_offsets[target_node_idx + 1];
+    const std::size_t target_interp_pts_start =
+        target_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+    const std::size_t target_potentials_start =
+        target_node_idx * static_cast<std::size_t>(num_mol_interp_potentials_per_node);
+    const std::size_t total = static_cast<std::size_t>(num_mol_interp_potentials_per_node);
+
+    for (std::size_t t = static_cast<std::size_t>(threadIdx.x);
+         t < total; t += static_cast<std::size_t>(blockDim.x)) {
+        const int p = num_mol_interp_pts_per_node;
+        const std::size_t j1 = t / static_cast<std::size_t>(p * p);
+        const std::size_t j2 = (t / static_cast<std::size_t>(p)) % static_cast<std::size_t>(p);
+        const std::size_t j3 = t % static_cast<std::size_t>(p);
+        const std::size_t jj = target_potentials_start + t;
+
+        const double target_x = mol_clusters_x[target_interp_pts_start + j1];
+        const double target_y = mol_clusters_y[target_interp_pts_start + j2];
+        const double target_z = mol_clusters_z[target_interp_pts_start + j3];
+
+        for (std::uint32_t list_idx = list_begin; list_idx < list_end; ++list_idx) {
+            const std::size_t source_node_idx = static_cast<std::size_t>(cc_sources[list_idx]);
+            const std::size_t source_interp_pts_start =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_pts_per_node);
+            const std::size_t source_charges_start =
+                source_node_idx * static_cast<std::size_t>(num_mol_interp_charges_per_node);
+
+            double pot_temp = 0.0;
+            for (int k1 = 0; k1 < num_mol_interp_pts_per_node; ++k1) {
+                const double sx = mol_clusters_x[source_interp_pts_start + static_cast<std::size_t>(k1)];
+                for (int k2 = 0; k2 < num_mol_interp_pts_per_node; ++k2) {
+                    const double sy = mol_clusters_y[source_interp_pts_start + static_cast<std::size_t>(k2)];
+                    for (int k3 = 0; k3 < num_mol_interp_pts_per_node; ++k3) {
+                        const double sz = mol_clusters_z[source_interp_pts_start + static_cast<std::size_t>(k3)];
+                        const std::size_t kk = source_charges_start
+                                             + static_cast<std::size_t>(k1 * num_mol_interp_pts_per_node * num_mol_interp_pts_per_node)
+                                             + static_cast<std::size_t>(k2 * num_mol_interp_pts_per_node + k3);
+
+                        const double dx = target_x - sx;
+                        const double dy = target_y - sy;
+                        const double dz = target_z - sz;
+                        const double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        pot_temp += mol_clusters_q[kk] * inv_eps_solute / r;
+                    }
+                }
+            }
+            mol_clusters_p[jj] += pot_temp;
+        }
+    }
 }
 
 __global__ void coulombic_up_denom_kernel(
@@ -587,4 +831,145 @@ extern "C" void coulombic_up_cuda(
     if (err != cudaSuccess) {
         std::fprintf(stderr, "coulombic_up_cuda kernel launch failed: %s\n", cudaGetErrorString(err));
     }
+}
+
+extern "C" void coulombic_pp_batched_cuda(
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    double* coul_eng,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* pp_offsets,
+    const std::uint32_t* pp_sources,
+    double eps_solute,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    if (!coul_eng) return;
+
+    const double inv_eps_solute = 1.0 / eps_solute;
+    constexpr int kBlockSize = 128;
+    const int grid = static_cast<int>(num_target_nodes);
+    const cudaStream_t cuda_stream = stream ? static_cast<cudaStream_t>(stream) : 0;
+
+    coulombic_pp_batched_kernel<<<grid, kBlockSize, 0, cuda_stream>>>(
+        mol_x, mol_y, mol_z, mol_q, coul_eng,
+        target_node_begin, target_node_end, num_target_nodes,
+        source_node_begin, source_node_end,
+        pp_offsets, pp_sources,
+        inv_eps_solute);
+}
+
+extern "C" void coulombic_pc_batched_cuda(
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    double* coul_eng,
+    const std::uint32_t* target_node_begin,
+    const std::uint32_t* target_node_end,
+    std::size_t num_target_nodes,
+    const std::uint32_t* pc_offsets,
+    const std::uint32_t* pc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    double eps_solute,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    if (num_mol_interp_pts_per_node <= 0) return;
+    if (!coul_eng) return;
+
+    const double inv_eps_solute = 1.0 / eps_solute;
+    constexpr int kBlockSize = 128;
+    const int grid = static_cast<int>(num_target_nodes);
+    const cudaStream_t cuda_stream = stream ? static_cast<cudaStream_t>(stream) : 0;
+
+    coulombic_pc_batched_kernel<<<grid, kBlockSize, 0, cuda_stream>>>(
+        mol_x, mol_y, mol_z, mol_q,
+        mol_clusters_x, mol_clusters_y, mol_clusters_z, mol_clusters_q,
+        coul_eng,
+        target_node_begin, target_node_end, num_target_nodes,
+        pc_offsets, pc_sources,
+        num_mol_interp_pts_per_node, num_mol_interp_charges_per_node,
+        inv_eps_solute);
+}
+
+extern "C" void coulombic_cp_batched_cuda(
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    double* mol_clusters_p,
+    const double* mol_x,
+    const double* mol_y,
+    const double* mol_z,
+    const double* mol_q,
+    std::size_t num_target_nodes,
+    const std::uint32_t* source_node_begin,
+    const std::uint32_t* source_node_end,
+    const std::uint32_t* cp_offsets,
+    const std::uint32_t* cp_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_potentials_per_node,
+    double eps_solute,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    if (num_mol_interp_potentials_per_node <= 0) return;
+
+    const double inv_eps_solute = 1.0 / eps_solute;
+    constexpr int kBlockSize = 128;
+    const int grid = static_cast<int>(num_target_nodes);
+    const cudaStream_t cuda_stream = stream ? static_cast<cudaStream_t>(stream) : 0;
+
+    coulombic_cp_batched_kernel<<<grid, kBlockSize, 0, cuda_stream>>>(
+        mol_clusters_x, mol_clusters_y, mol_clusters_z, mol_clusters_p,
+        mol_x, mol_y, mol_z, mol_q,
+        num_target_nodes,
+        source_node_begin, source_node_end,
+        cp_offsets, cp_sources,
+        num_mol_interp_pts_per_node,
+        num_mol_interp_potentials_per_node,
+        inv_eps_solute);
+}
+
+extern "C" void coulombic_cc_batched_cuda(
+    const double* mol_clusters_x,
+    const double* mol_clusters_y,
+    const double* mol_clusters_z,
+    const double* mol_clusters_q,
+    double* mol_clusters_p,
+    std::size_t num_target_nodes,
+    const std::uint32_t* cc_offsets,
+    const std::uint32_t* cc_sources,
+    int num_mol_interp_pts_per_node,
+    int num_mol_interp_charges_per_node,
+    int num_mol_interp_potentials_per_node,
+    double eps_solute,
+    void* stream)
+{
+    if (num_target_nodes == 0) return;
+    if (num_mol_interp_potentials_per_node <= 0) return;
+
+    const double inv_eps_solute = 1.0 / eps_solute;
+    constexpr int kBlockSize = 128;
+    const int grid = static_cast<int>(num_target_nodes);
+    const cudaStream_t cuda_stream = stream ? static_cast<cudaStream_t>(stream) : 0;
+
+    coulombic_cc_batched_kernel<<<grid, kBlockSize, 0, cuda_stream>>>(
+        mol_clusters_x, mol_clusters_y, mol_clusters_z, mol_clusters_q, mol_clusters_p,
+        num_target_nodes,
+        cc_offsets, cc_sources,
+        num_mol_interp_pts_per_node, num_mol_interp_charges_per_node,
+        num_mol_interp_potentials_per_node,
+        inv_eps_solute);
 }
