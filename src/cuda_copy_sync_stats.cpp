@@ -4,7 +4,6 @@
 
 #include <atomic>
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <mutex>
 
@@ -34,11 +33,11 @@ std::atomic<std::uint64_t> g_event_sync_wall_ns{0};
 std::once_flag g_register_once;
 
 bool stats_enabled() {
-    static const bool enabled = []() {
-        const char* env = std::getenv("TABIPB_CUDA_COPY_STATS");
-        return (env && std::strcmp(env, "0") != 0);
-    }();
-    return enabled;
+#ifdef USE_CUDA_COPY_STATS
+    return true;
+#else
+    return false;
+#endif
 }
 
 double mib(std::uint64_t bytes) {

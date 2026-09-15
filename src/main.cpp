@@ -14,6 +14,7 @@
 #include "main_backend.h"
 
 int main(int argc, char *argv[]) {
+  std::cout << "TABI-PB backend: " << main_backend_name() << std::endl;
   main_backend_initialize_runtime();
   // set the parameter struct, which is read in from file provided as argv
   if (argc < 2) {

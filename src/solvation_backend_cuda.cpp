@@ -19,7 +19,7 @@ bool SolvationEnergyCompute::validate_device_buffers_common_() const
     }
 
     const auto& buf = device_buffers_;
-    const std::size_t q_num = mol_interp_charge_.size();
+    const std::size_t q_num = num_mol_charges_;
     const std::size_t p_num = elem_interp_potential_.size();
     const std::size_t p_dx_num = elem_interp_potential_dx_.size();
     const std::size_t p_dy_num = elem_interp_potential_dy_.size();
@@ -125,29 +125,14 @@ bool SolvationEnergyCompute::validate_device_buffers_downward_pass_() const
 
 bool SolvationEnergyCompute::run_batched_interactions_cuda_()
 {
-    const char* use_batched_env = std::getenv("TABIPB_CUDA_SOLVATION_BATCHED");
-    const bool use_batched =
-        !(use_batched_env && std::strcmp(use_batched_env, "0") == 0);
-    if (!use_batched) {
-        return false;
-    }
+#ifndef USE_CUDA_BATCHED_INTERACTIONS
+    return false;
+#endif
 
     if (potential_device_ptr_ == nullptr) {
         return false;
     }
 
-    const char* pp_env = std::getenv("TABIPB_CUDA_SOLVATION_PP");
-    const char* pc_env = std::getenv("TABIPB_CUDA_SOLVATION_PC");
-    const char* cp_env = std::getenv("TABIPB_CUDA_SOLVATION_CP");
-    const char* cc_env = std::getenv("TABIPB_CUDA_SOLVATION_CC");
-    const bool pp_enabled = !(pp_env && std::strcmp(pp_env, "0") == 0);
-    const bool pc_enabled = !(pc_env && std::strcmp(pc_env, "0") == 0);
-    const bool cp_enabled = !(cp_env && std::strcmp(cp_env, "0") == 0);
-    const bool cc_enabled = !(cc_env && std::strcmp(cc_env, "0") == 0);
-
-    if (!(pp_enabled && pc_enabled && cp_enabled && cc_enabled)) {
-        return false;
-    }
     if (!validate_device_buffers_common_()) {
         return false;
     }
@@ -167,83 +152,16 @@ bool SolvationEnergyCompute::run_batched_interactions_cuda_()
     const auto mol_interp_dev = mol_interp_pts_.device_view();
     const auto self_dev = device_view();
 
-    if (!solvation_try_upward_pass_cuda(mol_dev, mol_interp_dev, self_dev,
-                                        source_tree_, params, nullptr)) {
-        return false;
+    if (!mol_interp_pts_.charge_cache_ready(num_mol_charges_)) {
+        if (!solvation_try_upward_pass_cuda(mol_dev, mol_interp_dev, self_dev,
+                                            source_tree_, params, nullptr)) {
+            return false;
+        }
+        mol_interp_pts_.mark_charge_cache_ready(num_mol_charges_);
     }
 
-    const char* batch_pp_env = std::getenv("TABIPB_CUDA_SOLVATION_BATCHED_PP");
-    const char* batch_pc_env = std::getenv("TABIPB_CUDA_SOLVATION_BATCHED_PC");
-    const char* batch_cp_env = std::getenv("TABIPB_CUDA_SOLVATION_BATCHED_CP");
-    const char* batch_cc_env = std::getenv("TABIPB_CUDA_SOLVATION_BATCHED_CC");
-    const bool batch_pp = !(batch_pp_env && std::strcmp(batch_pp_env, "0") == 0);
-    const bool batch_pc = !(batch_pc_env && std::strcmp(batch_pc_env, "0") == 0);
-    const bool batch_cp = !(batch_cp_env && std::strcmp(batch_cp_env, "0") == 0);
-    const bool batch_cc = !(batch_cc_env && std::strcmp(batch_cc_env, "0") == 0);
-
-    auto run_pp_legacy = [&]() -> bool {
-        const std::size_t num_target_nodes = target_tree_.num_nodes();
-        for (std::size_t target_node_idx = 0; target_node_idx < num_target_nodes; ++target_node_idx) {
-            const auto target_node_idxs = target_tree_.node_particle_idxs(target_node_idx);
-            for (auto source_node_idx : interaction_list_.particle_particle(target_node_idx)) {
-                const auto source_node_idxs = source_tree_.node_particle_idxs(source_node_idx);
-                if (!solvation_try_particle_particle_cuda(
-                        elem_dev, mol_dev, self_dev, target_node_idxs, source_node_idxs,
-                        potential_device_ptr_, params, nullptr)) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    };
-
-    auto run_pc_legacy = [&]() -> bool {
-        const std::size_t num_target_nodes = target_tree_.num_nodes();
-        for (std::size_t target_node_idx = 0; target_node_idx < num_target_nodes; ++target_node_idx) {
-            const auto target_node_idxs = target_tree_.node_particle_idxs(target_node_idx);
-            for (auto source_node_idx : interaction_list_.particle_cluster(target_node_idx)) {
-                if (!solvation_try_particle_cluster_cuda(
-                        elem_dev, mol_interp_dev, self_dev, target_node_idxs, source_node_idx,
-                        potential_device_ptr_, params, nullptr)) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    };
-
-    auto run_cp_legacy = [&]() -> bool {
-        const std::size_t num_target_nodes = target_tree_.num_nodes();
-        for (std::size_t target_node_idx = 0; target_node_idx < num_target_nodes; ++target_node_idx) {
-            for (auto source_node_idx : interaction_list_.cluster_particle(target_node_idx)) {
-                const auto source_node_idxs = source_tree_.node_particle_idxs(source_node_idx);
-                if (!solvation_try_cluster_particle_cuda(
-                        mol_dev, elem_interp_dev, self_dev, target_node_idx, source_node_idxs,
-                        params, nullptr)) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    };
-
-    auto run_cc_legacy = [&]() -> bool {
-        const std::size_t num_target_nodes = target_tree_.num_nodes();
-        for (std::size_t target_node_idx = 0; target_node_idx < num_target_nodes; ++target_node_idx) {
-            for (auto source_node_idx : interaction_list_.cluster_cluster(target_node_idx)) {
-                if (!solvation_try_cluster_cluster_cuda(
-                        mol_interp_dev, elem_interp_dev, self_dev, target_node_idx, source_node_idx,
-                        params, nullptr)) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    };
-
     const auto& buf = device_buffers_;
-    if (batch_pp) {
-        solvation_pp_batched_cuda(
+    solvation_pp_batched_cuda(
             elem_dev.x, elem_dev.y, elem_dev.z,
             elem_dev.nx, elem_dev.ny, elem_dev.nz,
             elem_dev.area,
@@ -253,14 +171,10 @@ bool SolvationEnergyCompute::run_batched_interactions_cuda_()
             buf.source_node_begin_dev, buf.source_node_end_dev,
             buf.pp_offsets_dev, buf.pp_sources_dev,
             params.eps, params.kappa,
-            self_dev.solv_eng, nullptr);
-        CUDA_CHECK_LAST_KERNEL();
-    } else if (!run_pp_legacy()) {
-        return false;
-    }
+        self_dev.solv_eng, nullptr);
+    CUDA_CHECK_LAST_KERNEL();
 
-    if (batch_pc) {
-        solvation_pc_batched_cuda(
+    solvation_pc_batched_cuda(
             elem_dev.x, elem_dev.y, elem_dev.z,
             elem_dev.nx, elem_dev.ny, elem_dev.nz,
             elem_dev.area,
@@ -271,14 +185,10 @@ bool SolvationEnergyCompute::run_batched_interactions_cuda_()
             buf.pc_offsets_dev, buf.pc_sources_dev,
             params.num_mol_interp_pts_per_node, params.num_mol_interp_charges_per_node,
             params.eps, params.kappa,
-            self_dev.solv_eng, nullptr);
-        CUDA_CHECK_LAST_KERNEL();
-    } else if (!run_pc_legacy()) {
-        return false;
-    }
+        self_dev.solv_eng, nullptr);
+    CUDA_CHECK_LAST_KERNEL();
 
-    if (batch_cp) {
-        solvation_cp_batched_cuda(
+    solvation_cp_batched_cuda(
             mol_dev.particles_x, mol_dev.particles_y, mol_dev.particles_z, mol_dev.charge,
             elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
             self_dev.p, self_dev.p_dx, self_dev.p_dy, self_dev.p_dz,
@@ -286,14 +196,10 @@ bool SolvationEnergyCompute::run_batched_interactions_cuda_()
             buf.source_node_begin_dev, buf.source_node_end_dev,
             buf.cp_offsets_dev, buf.cp_sources_dev,
             params.num_elem_interp_pts_per_node, params.num_elem_interp_potentials_per_node,
-            params.eps, params.kappa, nullptr);
-        CUDA_CHECK_LAST_KERNEL();
-    } else if (!run_cp_legacy()) {
-        return false;
-    }
+        params.eps, params.kappa, nullptr);
+    CUDA_CHECK_LAST_KERNEL();
 
-    if (batch_cc) {
-        solvation_cc_batched_cuda(
+    solvation_cc_batched_cuda(
             mol_interp_dev.interp_x, mol_interp_dev.interp_y, mol_interp_dev.interp_z,
             self_dev.q,
             elem_interp_dev.interp_x, elem_interp_dev.interp_y, elem_interp_dev.interp_z,
@@ -302,11 +208,8 @@ bool SolvationEnergyCompute::run_batched_interactions_cuda_()
             buf.cc_offsets_dev, buf.cc_sources_dev,
             params.num_elem_interp_pts_per_node, params.num_elem_interp_potentials_per_node,
             params.num_mol_interp_pts_per_node, params.num_mol_interp_charges_per_node,
-            params.eps, params.kappa, nullptr);
-        CUDA_CHECK_LAST_KERNEL();
-    } else if (!run_cc_legacy()) {
-        return false;
-    }
+        params.eps, params.kappa, nullptr);
+    CUDA_CHECK_LAST_KERNEL();
 
     if (!solvation_try_downward_pass_cuda(elem_dev, elem_interp_dev, self_dev,
                                           target_tree_, potential_device_ptr_,
@@ -560,12 +463,8 @@ bool solvation_try_downward_pass_cuda(
 
 void SolvationEnergyCompute::copyin_clusters_to_device_cuda_() const
 {
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all =
-        !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-
-    const double* q_ptr = mol_interp_charge_.data();
-    const std::size_t q_num = mol_interp_charge_.size();
+    const std::size_t q_num = num_mol_charges_;
+    double* const shared_q_dev = mol_interp_pts_.prepare_charge_cache(q_num);
 
     const double* p_ptr = elem_interp_potential_.data();
     const double* p_dx_ptr = elem_interp_potential_dx_.data();
@@ -626,7 +525,7 @@ void SolvationEnergyCompute::copyin_clusters_to_device_cuda_() const
          buf.cp_sources_num != cp_sources_num ||
          buf.cc_offsets_num != cc_offsets_num ||
          buf.cc_sources_num != cc_sources_num)) {
-        CUDA_FREE_AND_NULL(buf.q_dev);
+        buf.q_dev = nullptr;
         CUDA_FREE_AND_NULL(buf.p_dev);
         CUDA_FREE_AND_NULL(buf.p_dx_dev);
         CUDA_FREE_AND_NULL(buf.p_dy_dev);
@@ -662,7 +561,7 @@ void SolvationEnergyCompute::copyin_clusters_to_device_cuda_() const
          cp_offsets_num > 0 || cp_sources_num > 0 ||
          cc_offsets_num > 0 || cc_sources_num > 0)) {
         if (q_num > 0) {
-            CUDA_MALLOC_OR_DIE(&buf.q_dev, q_num * sizeof(double));
+            buf.q_dev = shared_q_dev;
             buf.q_num = q_num;
         }
         if (p_num > 0) {
@@ -758,10 +657,6 @@ void SolvationEnergyCompute::copyin_clusters_to_device_cuda_() const
     }
 
     cudaStream_t stream = nullptr;
-    if (q_num > 0 && buf.q_dev) {
-        CUDA_MEMCPY_ASYNC(buf.q_dev, q_ptr, q_num * sizeof(double),
-                          cudaMemcpyHostToDevice, stream);
-    }
     if (p_num > 0 && buf.p_dev) {
         CUDA_MEMCPY_ASYNC(buf.p_dev, p_ptr, p_num * sizeof(double),
                           cudaMemcpyHostToDevice, stream);
@@ -853,7 +748,7 @@ void SolvationEnergyCompute::copyin_clusters_to_device_cuda_() const
     CUDA_SYNC_AND_CHECK();
     device_state_ = CudaDeviceState::DeviceMapped;
 
-    if (require_all) {
+    {
         if (!buf.ready ||
             (q_num > 0 && !buf.q_dev) ||
             (p_num > 0 && !buf.p_dev) ||
@@ -878,7 +773,7 @@ void SolvationEnergyCompute::copyin_clusters_to_device_cuda_() const
             (cp_sources_num > 0 && !buf.cp_sources_dev) ||
             (cc_offsets_num > 0 && !buf.cc_offsets_dev) ||
             (cc_sources_num > 0 && !buf.cc_sources_dev)) {
-            std::cerr << "[CUDA_SOLVATION] require_all set but device buffers not ready.\n";
+            std::cerr << "[CUDA_SOLVATION] device buffers not ready.\n";
             std::exit(1);
         }
     }
@@ -897,7 +792,7 @@ void SolvationEnergyCompute::delete_clusters_from_device_cuda_() const
                               cudaMemcpyDeviceToHost, stream);
             CUDA_STREAM_SYNC_AND_CHECK(stream);
         }
-        CUDA_FREE_AND_NULL(buf.q_dev);
+    buf.q_dev = nullptr;
         CUDA_FREE_AND_NULL(buf.p_dev);
         CUDA_FREE_AND_NULL(buf.p_dx_dev);
         CUDA_FREE_AND_NULL(buf.p_dy_dev);

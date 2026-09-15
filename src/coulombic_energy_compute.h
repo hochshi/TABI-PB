@@ -49,17 +49,12 @@ private:
     std::vector<std::uint32_t> pp_sources_u32_;
     std::vector<std::uint32_t> pc_offsets_u32_;
     std::vector<std::uint32_t> pc_sources_u32_;
-    std::vector<std::uint32_t> cp_offsets_u32_;
-    std::vector<std::uint32_t> cp_sources_u32_;
-    std::vector<std::uint32_t> cc_offsets_u32_;
-    std::vector<std::uint32_t> cc_sources_u32_;
 
 #ifdef USE_CUDA_CC
     class DeviceBuffers {
         friend class CoulombicEnergyCompute;
     private:
         double* q_dev = nullptr;
-        double* p_dev = nullptr;
         double* coul_eng_dev = nullptr;
         double* weights_dev = nullptr;
         int* exact_idx_x_dev = nullptr;
@@ -74,13 +69,8 @@ private:
         std::uint32_t* pp_sources_dev = nullptr;
         std::uint32_t* pc_offsets_dev = nullptr;
         std::uint32_t* pc_sources_dev = nullptr;
-        std::uint32_t* cp_offsets_dev = nullptr;
-        std::uint32_t* cp_sources_dev = nullptr;
-        std::uint32_t* cc_offsets_dev = nullptr;
-        std::uint32_t* cc_sources_dev = nullptr;
 
         std::size_t q_num = 0;
-        std::size_t p_num = 0;
         std::size_t coul_eng_num = 0;
         std::size_t weights_num = 0;
         std::size_t scratch_num = 0;
@@ -90,10 +80,6 @@ private:
         std::size_t pp_sources_num = 0;
         std::size_t pc_offsets_num = 0;
         std::size_t pc_sources_num = 0;
-        std::size_t cp_offsets_num = 0;
-        std::size_t cp_sources_num = 0;
-        std::size_t cc_offsets_num = 0;
-        std::size_t cc_sources_num = 0;
         bool ready = false;
     };
 
@@ -102,8 +88,6 @@ private:
     bool validate_device_buffers_common_() const;
     bool validate_device_buffers_particle_particle_() const;
     bool validate_device_buffers_particle_cluster_() const;
-    bool validate_device_buffers_cluster_particle_() const;
-    bool validate_device_buffers_cluster_cluster_() const;
     bool validate_device_buffers_upward_pass_() const;
     bool run_batched_interactions_cuda_();
     void copyin_clusters_to_device_cuda_() const;
@@ -162,7 +146,6 @@ public:
 #ifdef USE_CUDA_CC
         view.ready = device_buffers_.ready;
         view.q = device_buffers_.q_dev;
-        view.p = device_buffers_.p_dev;
         view.coul_eng = device_buffers_.coul_eng_dev;
         view.weights = device_buffers_.weights_dev;
         view.exact_idx_x = device_buffers_.exact_idx_x_dev;
@@ -170,7 +153,6 @@ public:
         view.exact_idx_z = device_buffers_.exact_idx_z_dev;
         view.denominator = device_buffers_.denominator_dev;
         view.q_num = device_buffers_.q_num;
-        view.p_num = device_buffers_.p_num;
         view.coul_eng_num = device_buffers_.coul_eng_num;
         view.weights_num = device_buffers_.weights_num;
         view.scratch_num = device_buffers_.scratch_num;

@@ -18,7 +18,6 @@
 #endif // PLY_ENABLED
 
 #include "constants.h"
-#include "elements_backend_common.h"
 #include "elements_backend_cpu.h"
 #ifdef USE_CUDA_CC
 #include "elements_backend_cuda.h"
@@ -410,7 +409,6 @@ void Elements::compute_source_term() {
 #ifdef USE_CUDA_CC
   const std::size_t num_atoms = molecule_.num();
   const std::size_t num = num_;
-  const bool require_all = elements_cuda_require_all();
   if (validate_device_buffers_compute_source_term_()) {
     const auto elem_view = device_view();
     const auto mol_view = molecule_.device_view();
@@ -421,16 +419,14 @@ void Elements::compute_source_term() {
       return;
     }
   }
-  if (require_all) {
-    std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
-              << "Aborting to avoid OpenACC fallback.\n";
-    std::exit(1);
-  }
-#endif
+  std::cerr << "[CUDA_ELEM] device pointers not present.\n";
+  std::exit(1);
+#else
 
   const auto elem_view = host_view();
   const auto mol_view = molecule_.host_view();
   elements_compute_source_term_cpu(elem_view, mol_view, eps_solute);
+#endif
 
   Elements::update_source_term_on_host();
 
@@ -511,20 +507,17 @@ void Elements::compute_charges(const double *__restrict potential_ptr) {
       return;
     }
   }
-  if (elements_cuda_require_all()) {
-    if (!cuda_pointer_is_device_accessible(potential_ptr)) {
-      std::cerr << "[CUDA_ELEM] require_all set but potential pointer is not a CUDA device pointer. "
-                << "Aborting to avoid OpenACC interop fallback.\n";
-    } else {
-      std::cerr << "[CUDA_ELEM] require_all set but device pointers not present. "
-                << "Aborting to avoid OpenACC fallback.\n";
-    }
-    std::exit(1);
+  if (!cuda_pointer_is_device_accessible(potential_ptr)) {
+    std::cerr << "[CUDA_ELEM] potential pointer is not a CUDA device pointer.\n";
+  } else {
+    std::cerr << "[CUDA_ELEM] device pointers not present.\n";
   }
-#endif
+  std::exit(1);
+#else
 
   const auto elem_view = host_view();
   elements_compute_charges_cpu(elem_view, potential_ptr, num);
+#endif
 
   timers_.compute_charges.stop();
 }

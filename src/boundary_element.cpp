@@ -719,23 +719,18 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
     std::size_t sources_num = pp_sources_u32_.size();
 #ifdef USE_CUDA_CC
     {
-        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-        const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-        const char* require_pp_env = std::getenv("TABIPB_CUDA_REQUIRE_PP");
-        const bool require_cuda_pp = require_all || (require_pp_env && std::strcmp(require_pp_env, "0") != 0);
-
         const bool present_ok =
             validate_device_buffers_particle_particle_() &&
             cuda_pointer_is_device_accessible(potential) &&
             cuda_pointer_is_device_accessible(potential_old);
 
-        if (require_cuda_pp && !present_ok) {
-            std::cerr << "[CUDA_PP] require set but device pointers not present. "
+        if (!present_ok) {
+            std::cerr << "[CUDA_PP] device pointers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         }
 
-        if (present_ok) {
+        {
             void* stream = nullptr;
             pp_interact_cuda(eps,
                              kappa,
@@ -761,21 +756,6 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
                              stream);
             timers_.particle_particle_interact.stop();
             return;
-        } else if (require_cuda_pp) {
-            std::cerr << "[CUDA_PP] require set but pointers not present. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
-    }
-#else
-    {
-        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-        const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-        const char* require_pp_env = std::getenv("TABIPB_CUDA_REQUIRE_PP");
-        if (require_all || (require_pp_env && std::strcmp(require_pp_env, "0") != 0)) {
-            std::cerr << "[CUDA_PP] require set but binary was built without USE_CUDA_CC. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
         }
     }
 #endif
@@ -869,8 +849,7 @@ void BoundaryElement::particle_particle_interact_all(double* __restrict potentia
 
 
 void BoundaryElement::particle_cluster_interact_all(double* __restrict potential,
-                                                    const double* __restrict potential_old,
-                                                    bool include_pp)
+                                                    const double* __restrict potential_old)
 {
     timers_.particle_cluster_interact.start();
 
@@ -938,28 +917,20 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
     std::size_t pp_sources_num = pp_sources_u32_.size();
     std::size_t pc_offsets_num = pc_offsets_u32_.size();
     std::size_t pc_sources_num = pc_sources_u32_.size();
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    const char* require_pc_env = std::getenv("TABIPB_CUDA_REQUIRE_PC");
-    const bool require_cuda_pc = require_all || (require_pc_env && std::strcmp(require_pc_env, "0") != 0);
-    const char* fused_env = std::getenv("TABIPB_CUDA_PPPC_FUSED");
-    const char* require_fused_env = std::getenv("TABIPB_CUDA_REQUIRE_PPPC");
-    const bool require_fused = require_all || (require_fused_env && std::strcmp(require_fused_env, "0") != 0);
-    const bool use_fused = require_fused || (fused_env && std::strcmp(fused_env, "0") != 0);
-#ifdef USE_CUDA_CC
-    if (include_pp && use_fused) {
+#ifdef USE_CUDA_FUSED_PPPC
+    {
         const bool present_ok =
-            validate_device_buffers_particle_cluster_(true) &&
+            validate_device_buffers_particle_cluster_() &&
             cuda_pointer_is_device_accessible(potential) &&
             cuda_pointer_is_device_accessible(potential_old);
 
-        if (require_fused && !present_ok) {
-            std::cerr << "[CUDA_PPPC] require set but device pointers not present. "
+        if (!present_ok) {
+            std::cerr << "[CUDA_PPPC] device pointers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         }
 
-        if (present_ok) {
+        {
             void* stream = nullptr;
             pppc_interact_cuda(num_interp_pts_per_node,
                                num_charges_per_node,
@@ -1003,18 +974,20 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
             timers_.particle_cluster_interact.stop();
             return;
         }
-    } else if (!include_pp) {
+    }
+#else
+    {
         const bool present_ok =
-            validate_device_buffers_particle_cluster_(false) &&
+            validate_device_buffers_particle_cluster_() &&
             cuda_pointer_is_device_accessible(potential);
 
-        if (require_cuda_pc && !present_ok) {
-            std::cerr << "[CUDA_PC] require set but device pointers not present. "
+        if (!present_ok) {
+            std::cerr << "[CUDA_PC] device pointers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         }
 
-        if (present_ok) {
+        {
             void* stream = nullptr;
             pc_interact_cuda(num_interp_pts_per_node,
                              num_charges_per_node,
@@ -1047,17 +1020,6 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
             timers_.particle_cluster_interact.stop();
             return;
         }
-    }
-#else
-    if (!include_pp && require_cuda_pc) {
-        std::cerr << "[CUDA_PC] require set but binary was built without USE_CUDA_CC. "
-                  << "Aborting to avoid OpenACC fallback.\n";
-        std::exit(1);
-    }
-    if (include_pp && require_fused) {
-        std::cerr << "[CUDA_PPPC] require set but binary was built without USE_CUDA_CC. "
-                  << "Aborting to avoid OpenACC fallback.\n";
-        std::exit(1);
     }
 #endif
 #endif  // USE_CUDA_CC
@@ -1116,7 +1078,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
                     pot_comp_dz[t] = 0.;
                 }
 
-                if (include_pp) {
+                {
                     for (std::size_t s = pp_start; s < pp_end; ++s) {
                         std::size_t source_node_idx = pp_sources_ptr[s];
                         std::size_t source_begin = node_begin_ptr[source_node_idx];
@@ -1281,7 +1243,7 @@ void BoundaryElement::particle_cluster_interact_all(double* __restrict potential
         double pot_pp_1 = 0.;
         double pot_pp_2 = 0.;
 
-        if (include_pp) {
+        {
             for (std::size_t s = pp_start; s < pp_end; ++s) {
                 std::size_t source_node_idx = pp_sources_ptr[s];
                 std::size_t source_begin = node_begin_ptr[source_node_idx];
@@ -1700,12 +1662,8 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
 
     if (num_interp_pts_per_node <= kBatchedMaxInterpPts) {
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    const char* require_cuda_env = std::getenv("TABIPB_CUDA_REQUIRE_CC");
-    const bool require_cuda_cc = require_all || (require_cuda_env && std::strcmp(require_cuda_env, "0") != 0);
-    if (require_cuda_cc && num_interp_pts_per_node > kBatchedMaxInterpPts) {
-        std::cerr << "[CUDA_CC] require set but num_interp_pts_per_node="
+    if (num_interp_pts_per_node > kBatchedMaxInterpPts) {
+        std::cerr << "[CUDA_CC] num_interp_pts_per_node="
                   << num_interp_pts_per_node
                   << " exceeds CUDA CC/CP limit " << kBatchedMaxInterpPts
                   << ". Aborting to avoid OpenACC fallback.\n";
@@ -1719,13 +1677,13 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
 #ifdef USE_CUDA_CC
         const bool present_ok = validate_device_buffers_cluster_mixed_();
 
-        if (require_cuda_cc && !present_ok) {
-            std::cerr << "[CUDA_CC] require set but device pointers not present. "
+        if (!present_ok) {
+            std::cerr << "[CUDA_CC] device pointers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         }
 
-        if (present_ok) {
+        {
             void* stream = nullptr;
             timers_.cluster_cluster_interact.stop();
             timers_.cluster_particle_interact.start();
@@ -1766,11 +1724,8 @@ void BoundaryElement::cluster_cluster_interact_all(double* __restrict potential)
             return;
         }
 #else
-        if (require_cuda_cc) {
-            std::cerr << "[CUDA_CC] require set but binary was built without USE_CUDA_CC. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
+        std::cerr << "[CUDA_CC] CUDA path unavailable.\n";
+        std::exit(1);
 #endif
 
 #endif  // USE_CUDA_CC
@@ -2391,57 +2346,30 @@ void BoundaryElement::upward_pass()
 #endif
 
 #if defined(USE_CUDA_CC)
-    const char* dbg_env = std::getenv("TABIPB_CUDA_UPWARD_DEBUG");
-    const bool debug_cuda_upward = (dbg_env && std::strcmp(dbg_env, "0") != 0);
-    if (debug_cuda_upward) {
-        std::cerr << "[CUDA_UP] debug mode enabled\n";
-    }
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    const char* require_up_env = std::getenv("TABIPB_CUDA_REQUIRE_UPWARD");
-    const bool require_cuda_upward = require_all || (require_up_env && std::strcmp(require_up_env, "0") != 0);
-    if (require_cuda_upward && num_interp_pts_per_node > kMaxInterpPts) {
-        std::cerr << "[CUDA_UP] require set but num_interp_pts_per_node="
+    if (num_interp_pts_per_node > kMaxInterpPts) {
+        std::cerr << "[CUDA_UP] num_interp_pts_per_node="
                   << num_interp_pts_per_node
                   << " exceeds CUDA upward limit " << kMaxInterpPts
                   << ". Aborting to avoid OpenACC fallback.\n";
         std::exit(1);
     }
     if (num_interp_pts_per_node <= kMaxInterpPts) {
-        const char* mode_env = std::getenv("TABIPB_CUDA_UPWARD_MODE");
-        bool use_split = false;
-        if (mode_env) {
-            use_split = (std::strcmp(mode_env, "split") == 0 ||
-                         std::strcmp(mode_env, "two") == 0 ||
-                         std::strcmp(mode_env, "2") == 0);
-        }
-
         std::size_t num_interp_pts = static_cast<std::size_t>(num_interp_pts_per_node) * num_nodes;
         std::size_t num_charges = static_cast<std::size_t>(num_charges_per_node_) * num_nodes;
         std::size_t num_elements = elements_.num();
 
-        bool present_ok = validate_device_buffers_upward_(use_split);
+        const bool present_ok = validate_device_buffers_upward_();
 
-        if (require_cuda_upward && !present_ok) {
-            std::cerr << "[CUDA_UP] require set but device pointers not present. "
+        if (!present_ok) {
+            std::cerr << "[CUDA_UP] device pointers not present. "
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         }
 
-        if (debug_cuda_upward) {
-            std::cerr << "[CUDA_UP] interp_pts_per_node=" << num_interp_pts_per_node
-                      << " kMax=" << kMaxInterpPts
-                      << " use_split=" << use_split
-                      << " level_nodes=" << level_nodes_num
-                      << " num_nodes=" << num_nodes
-                      << " num_elements=" << num_elements
-                      << "\n";
-            std::cerr << "[CUDA_UP] present_ok=" << present_ok << "\n";
-        }
-
-        if (present_ok) {
+        {
             void* stream = nullptr;
-            if (use_split) {
+#ifdef USE_CUDA_UPWARD_SPLIT
+            {
                 for (std::size_t level = 0; level < level_count; ++level) {
                     std::size_t level_begin = level_offsets_ptr[level];
                     std::size_t level_end = level_offsets_ptr[level + 1];
@@ -2474,7 +2402,9 @@ void BoundaryElement::upward_pass()
                                        device_buffers_.clusters_q, device_buffers_.clusters_q_dx, device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
                                        stream);
                 }
-            } else if (level_nodes_num > 0) {
+            }
+#else
+            if (level_nodes_num > 0) {
                 upward_fused_cuda(num_interp_pts_per_node, num_charges_per_node_,
                                   device_buffers_.clusters_x, device_buffers_.clusters_y, device_buffers_.clusters_z,
                                   device_buffers_.weights,
@@ -2486,6 +2416,7 @@ void BoundaryElement::upward_pass()
                                   device_buffers_.clusters_q, device_buffers_.clusters_q_dx, device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
                                   stream);
             }
+#endif
             timers_.upward_pass.stop();
             return;
         }
@@ -2731,10 +2662,8 @@ void BoundaryElement::downward_pass(double* __restrict potential)
 
 #ifdef USE_CUDA_CC
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    if (require_all && num_interp_pts_per_node > kMaxInterpPts) {
-        std::cerr << "[CUDA_DOWN] require_all set but num_interp_pts_per_node="
+    if (num_interp_pts_per_node > kMaxInterpPts) {
+        std::cerr << "[CUDA_DOWN] num_interp_pts_per_node="
                   << num_interp_pts_per_node
                   << " exceeds CUDA downward limit " << kMaxInterpPts
                   << ". Aborting to avoid OpenACC fallback.\n";
@@ -2746,7 +2675,7 @@ void BoundaryElement::downward_pass(double* __restrict potential)
         const std::size_t num_elements = elements_.num();
         const bool present_ok = validate_device_buffers_downward_(potential);
 
-        if (present_ok) {
+        {
             void* stream = nullptr;
             for (std::size_t level = 0; level < level_count; ++level) {
                 std::size_t level_begin = level_offsets_ptr[level];
@@ -2769,11 +2698,8 @@ void BoundaryElement::downward_pass(double* __restrict potential)
             return;
         }
 
-        if (require_all) {
-            std::cerr << "[CUDA_DOWN] require_all set but device pointers not present. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
+        std::cerr << "[CUDA_DOWN] device pointers not present. Aborting.\n";
+        std::exit(1);
     }
 #endif
 #endif
@@ -3017,10 +2943,8 @@ void BoundaryElement::clear_cluster_charges()
     double* __restrict clusters_q_dz_ptr = interp_charge_dz_.data();
 
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const bool present_ok = validate_device_buffers_clear_cluster_charges_();
-    if (present_ok) {
+    {
         void* stream = nullptr;
         be_clear_cluster_charges_cuda(device_buffers_.clusters_q, device_buffers_.clusters_q_dx,
                                       device_buffers_.clusters_q_dy, device_buffers_.clusters_q_dz,
@@ -3028,8 +2952,8 @@ void BoundaryElement::clear_cluster_charges()
         timers_.clear_cluster_charges.stop();
         return;
     }
-    if (require_all) {
-        std::cerr << "[CUDA_BE] require_all set but cluster charges not present on device. "
+    {
+        std::cerr << "[CUDA_BE] cluster charges not present on device. "
                   << "Aborting to avoid OpenACC fallback.\n";
         std::exit(1);
     }
@@ -3064,10 +2988,8 @@ void BoundaryElement::clear_cluster_potentials()
     double* __restrict clusters_p_dz_ptr = interp_potential_dz_.data();
 
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const bool present_ok = validate_device_buffers_clear_cluster_potentials_();
-    if (present_ok) {
+    {
         void* stream = nullptr;
         be_clear_cluster_potentials_cuda(device_buffers_.clusters_p, device_buffers_.clusters_p_dx,
                                          device_buffers_.clusters_p_dy, device_buffers_.clusters_p_dz,
@@ -3075,8 +2997,8 @@ void BoundaryElement::clear_cluster_potentials()
         timers_.clear_cluster_potentials.stop();
         return;
     }
-    if (require_all) {
-        std::cerr << "[CUDA_BE] require_all set but cluster potentials not present on device. "
+    {
+        std::cerr << "[CUDA_BE] cluster potentials not present on device. "
                   << "Aborting to avoid OpenACC fallback.\n";
         std::exit(1);
     }

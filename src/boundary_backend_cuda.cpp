@@ -27,16 +27,9 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
 {
     timers_.matrix_vector.start();
 
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     if (device_state_ != CudaDeviceState::DeviceMapped || !device_buffers_.ready) {
-        if (require_all) {
-            std::cerr << "[CUDA_BE] require_all set but CUDA pointers not cached. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
-        timers_.matrix_vector.stop();
-        return;
+        std::cerr << "[CUDA_BE] CUDA pointers not cached.\n";
+        std::exit(1);
     }
 
     const DeviceBuffers& cp = device_buffers_;
@@ -50,8 +43,8 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
     const int num_interp_pts_per_node = interp_pts_.num_interp_pts_per_node();
     constexpr int kMaxInterpPts = 16;
 
-    if (require_all && num_interp_pts_per_node > kMaxInterpPts) {
-        std::cerr << "[CUDA_BE] require_all set but num_interp_pts_per_node="
+    if (num_interp_pts_per_node > kMaxInterpPts) {
+        std::cerr << "[CUDA_BE] num_interp_pts_per_node="
                   << num_interp_pts_per_node
                   << " exceeds CUDA upward/downward limit " << kMaxInterpPts
                   << ". Aborting to avoid OpenACC fallback.\n";
@@ -97,13 +90,8 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
     const double kappa = params_.phys_kappa_;
     const double kappa2 = params_.phys_kappa2_;
 
-    bool use_fused_pppc = false;
-    const char* fused_env = std::getenv("TABIPB_CUDA_PPPC_FUSED");
-    const char* require_fused_env = std::getenv("TABIPB_CUDA_REQUIRE_PPPC");
-    const bool require_fused = require_all || (require_fused_env && std::strcmp(require_fused_env, "0") != 0);
-    use_fused_pppc = require_fused || (fused_env && std::strcmp(fused_env, "0") != 0);
-
-    if (use_fused_pppc) {
+#ifdef USE_CUDA_FUSED_PPPC
+    {
         cuda_timer_queue_.begin(timers_.particle_cluster_interact, stream);
         pppc_interact_cuda(num_interp_pts_per_node, num_charges_per_node_,
                            eps, kappa, kappa2,
@@ -123,7 +111,9 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
                            pc_offsets_u32_.size(), pc_sources_u32_.size(),
                            stream);
         cuda_timer_queue_.end(stream);
-    } else {
+    }
+#else
+    {
         cuda_timer_queue_.begin(timers_.particle_particle_interact, stream);
         pp_interact_cuda(eps, kappa, kappa2,
                          cp.elements_x, cp.elements_y, cp.elements_z,
@@ -155,10 +145,9 @@ void BoundaryElement::matrix_vector_cuda(double alpha, const double* potential_o
                          stream);
         cuda_timer_queue_.end(stream);
     }
+#endif
 
-    const char* disable_cp_env = std::getenv("TABIPB_CUDA_CC_DISABLE_CP");
-    const bool disable_cp = (disable_cp_env && std::strcmp(disable_cp_env, "0") != 0);
-    if (!disable_cp) {
+    {
         int n = num_interp_pts_per_node;
         int n2 = n * n;
         int n3 = n2 * n;
@@ -266,7 +255,7 @@ bool BoundaryElement::validate_device_buffers_particle_particle_() const
            b.pp_offsets && b.pp_sources;
 }
 
-bool BoundaryElement::validate_device_buffers_particle_cluster_(bool include_pp) const
+bool BoundaryElement::validate_device_buffers_particle_cluster_() const
 {
     const auto& b = device_buffers_;
     const bool base_ok =
@@ -280,12 +269,8 @@ bool BoundaryElement::validate_device_buffers_particle_cluster_(bool include_pp)
     if (!base_ok) {
         return false;
     }
-    if (include_pp) {
-        return b.elements_nx && b.elements_ny && b.elements_nz && b.elements_area &&
-               b.node_begin && b.node_end &&
-               b.pp_offsets && b.pp_sources;
-    }
-    return true;
+    return b.elements_nx && b.elements_ny && b.elements_nz && b.elements_area &&
+           b.node_begin && b.node_end && b.pp_offsets && b.pp_sources;
 }
 
 bool BoundaryElement::validate_device_buffers_cluster_mixed_() const
@@ -302,7 +287,7 @@ bool BoundaryElement::validate_device_buffers_cluster_mixed_() const
            b.cp_offsets && b.cp_sources && b.cc_offsets && b.cc_sources;
 }
 
-bool BoundaryElement::validate_device_buffers_upward_(bool use_split) const
+bool BoundaryElement::validate_device_buffers_upward_() const
 {
     const auto& b = device_buffers_;
     bool ok = device_state_ == CudaDeviceState::DeviceMapped && b.ready &&
@@ -315,10 +300,11 @@ bool BoundaryElement::validate_device_buffers_upward_(bool use_split) const
     if (!ok) {
         return false;
     }
-    if (use_split) {
+#ifdef USE_CUDA_UPWARD_SPLIT
         return b.exact_idx_x && b.exact_idx_y && b.exact_idx_z && b.denominator;
-    }
+#else
     return true;
+#endif
 }
 
 bool BoundaryElement::validate_device_buffers_downward_(const double* potential) const

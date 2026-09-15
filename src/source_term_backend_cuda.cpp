@@ -20,7 +20,7 @@ bool SourceTermCompute::validate_device_buffers_common_() const
     }
 
     const auto& buf = device_buffers_;
-    const std::size_t q_num = mol_interp_charge_.size();
+    const std::size_t q_num = num_mol_charges_;
     const std::size_t p_num = elem_interp_potential_.size();
     const std::size_t p_dx_num = elem_interp_potential_dx_.size();
     const std::size_t p_dy_num = elem_interp_potential_dy_.size();
@@ -123,25 +123,9 @@ bool SourceTermCompute::validate_device_buffers_downward_pass_() const
 
 bool SourceTermCompute::run_batched_interactions_cuda_()
 {
-    const char* use_batched_env = std::getenv("TABIPB_CUDA_SOURCE_TERM_BATCHED");
-    const bool use_batched =
-        !(use_batched_env && std::strcmp(use_batched_env, "0") != 0);
-    if (!use_batched) {
-        return false;
-    }
-
-    const char* pp_env = std::getenv("TABIPB_CUDA_SOURCE_TERM_PP");
-    const char* pc_env = std::getenv("TABIPB_CUDA_SOURCE_TERM_PC");
-    const char* cp_env = std::getenv("TABIPB_CUDA_SOURCE_TERM_CP");
-    const char* cc_env = std::getenv("TABIPB_CUDA_SOURCE_TERM_CC");
-    const bool pp_enabled = !(pp_env && std::strcmp(pp_env, "0") == 0);
-    const bool pc_enabled = !(pc_env && std::strcmp(pc_env, "0") == 0);
-    const bool cp_enabled = !(cp_env && std::strcmp(cp_env, "0") == 0);
-    const bool cc_enabled = !(cc_env && std::strcmp(cc_env, "0") == 0);
-
-    if (!(pp_enabled && pc_enabled && cp_enabled && cc_enabled)) {
-        return false;
-    }
+#ifndef USE_CUDA_BATCHED_INTERACTIONS
+    return false;
+#endif
     if (!validate_device_buffers_common_()) {
         return false;
     }
@@ -160,9 +144,12 @@ bool SourceTermCompute::run_batched_interactions_cuda_()
     const auto mol_interp_dev = mol_interp_pts_.device_view();
     const auto self_dev = device_view();
 
-    if (!source_term_try_upward_pass_cuda(mol_dev, mol_interp_dev, self_dev,
-                                          source_tree_, params, nullptr)) {
-        return false;
+    if (!mol_interp_pts_.charge_cache_ready(num_mol_charges_)) {
+        if (!source_term_try_upward_pass_cuda(mol_dev, mol_interp_dev, self_dev,
+                                              source_tree_, params, nullptr)) {
+            return false;
+        }
+        mol_interp_pts_.mark_charge_cache_ready(num_mol_charges_);
     }
 
     const auto& buf = device_buffers_;
@@ -451,12 +438,8 @@ bool source_term_try_downward_pass_cuda(
 
 void SourceTermCompute::copyin_clusters_to_device_cuda_() const
 {
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all =
-        !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-
-    const double* q_ptr = mol_interp_charge_.data();
-    std::size_t q_num   = mol_interp_charge_.size();
+    const std::size_t q_num = num_mol_charges_;
+    double* const shared_q_dev = mol_interp_pts_.prepare_charge_cache(q_num);
 
     const double* p_ptr    = elem_interp_potential_.data();
     const double* p_dx_ptr = elem_interp_potential_dx_.data();
@@ -513,7 +496,7 @@ void SourceTermCompute::copyin_clusters_to_device_cuda_() const
                            buf.cp_sources_num != cp_sources_num ||
                            buf.cc_offsets_num != cc_offsets_num ||
                            buf.cc_sources_num != cc_sources_num)) {
-        CUDA_FREE_AND_NULL(buf.q_dev);
+        buf.q_dev = nullptr;
         CUDA_FREE_AND_NULL(buf.p_dev);
         CUDA_FREE_AND_NULL(buf.p_dx_dev);
         CUDA_FREE_AND_NULL(buf.p_dy_dev);
@@ -547,7 +530,7 @@ void SourceTermCompute::copyin_clusters_to_device_cuda_() const
                            cp_offsets_num > 0 || cp_sources_num > 0 ||
                            cc_offsets_num > 0 || cc_sources_num > 0)) {
         if (q_num > 0) {
-            CUDA_MALLOC_OR_DIE(&buf.q_dev, q_num * sizeof(double));
+            buf.q_dev = shared_q_dev;
             buf.q_num = q_num;
         }
         if (p_num > 0) {
@@ -639,10 +622,6 @@ void SourceTermCompute::copyin_clusters_to_device_cuda_() const
 
     cudaStream_t stream = nullptr;
 
-    if (q_num > 0) {
-        CUDA_MEMCPY_ASYNC(buf.q_dev, q_ptr, q_num * sizeof(double),
-                          cudaMemcpyHostToDevice, stream);
-    }
     if (p_num > 0) {
         CUDA_MEMCPY_ASYNC(buf.p_dev, p_ptr, p_num * sizeof(double),
                           cudaMemcpyHostToDevice, stream);
@@ -730,7 +709,7 @@ void SourceTermCompute::copyin_clusters_to_device_cuda_() const
     buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
 
-    if (require_all) {
+    {
         if ((q_num > 0 && !buf.q_dev) ||
             (p_num > 0 && !buf.p_dev) ||
             (p_dx_num > 0 && !buf.p_dx_dev) ||
@@ -756,7 +735,7 @@ void SourceTermCompute::copyin_clusters_to_device_cuda_() const
             (cc_sources_num > 0 && !buf.cc_sources_dev)) {
             std::fprintf(stderr,
                          "[CUDA] SourceTermCompute missing device buffers "
-                         "under TABIPB_CUDA_REQUIRE_ALL=1\n");
+                         "in a native-CUDA build\n");
             std::abort();
         }
     }
@@ -765,7 +744,7 @@ void SourceTermCompute::copyin_clusters_to_device_cuda_() const
 void SourceTermCompute::delete_clusters_from_device_cuda_() const
 {
     auto &buf = device_buffers_;
-    CUDA_FREE_AND_NULL(buf.q_dev);
+    buf.q_dev = nullptr;
     CUDA_FREE_AND_NULL(buf.p_dev);
     CUDA_FREE_AND_NULL(buf.p_dx_dev);
     CUDA_FREE_AND_NULL(buf.p_dy_dev);

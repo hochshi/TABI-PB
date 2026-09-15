@@ -30,6 +30,9 @@ private:
         double* interp_y_dev = nullptr;
         double* interp_z_dev = nullptr;
         std::size_t num_interp_pts = 0;
+        double* charge_dev = nullptr;
+        std::size_t charge_num = 0;
+        bool charge_ready = false;
     };
 
     mutable DeviceBuffers device_buffers_;
@@ -94,6 +97,10 @@ public:
     }
 
 #ifdef USE_CUDA_CC
+    double* prepare_charge_cache(std::size_t charge_num) const;
+    bool charge_cache_ready(std::size_t charge_num) const;
+    void mark_charge_cache_ready(std::size_t charge_num) const;
+
     bool cuda_device_ready() const {
         return device_state_ == CudaDeviceState::DeviceMapped &&
                device_buffers_.ready;

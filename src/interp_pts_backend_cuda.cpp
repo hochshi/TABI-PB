@@ -72,11 +72,46 @@ void InterpolationPoints::copyin_to_device_cuda_() const {
     device_state_ = CudaDeviceState::DeviceMapped;
 }
 
+double* InterpolationPoints::prepare_charge_cache(std::size_t charge_num) const {
+    auto& buf = device_buffers_;
+    if (!cuda_device_ready()) {
+        std::fprintf(stderr, "[CUDA_INTERP] charge cache requested before device mapping.\n");
+        std::abort();
+    }
+    if (buf.charge_num != 0 && buf.charge_num != charge_num) {
+        CUDA_FREE_AND_NULL(buf.charge_dev);
+        buf.charge_num = 0;
+        buf.charge_ready = false;
+    }
+    if (buf.charge_num == 0 && charge_num > 0) {
+        CUDA_MALLOC_OR_DIE(&buf.charge_dev, charge_num * sizeof(double));
+        CUDA_CHECK(cudaMemset(buf.charge_dev, 0, charge_num * sizeof(double)));
+        buf.charge_num = charge_num;
+    }
+    return buf.charge_dev;
+}
+
+bool InterpolationPoints::charge_cache_ready(std::size_t charge_num) const {
+    const auto& buf = device_buffers_;
+    return cuda_device_ready() && buf.charge_ready && buf.charge_dev &&
+           buf.charge_num == charge_num;
+}
+
+void InterpolationPoints::mark_charge_cache_ready(std::size_t charge_num) const {
+    auto& buf = device_buffers_;
+    if (!buf.charge_dev || buf.charge_num != charge_num) {
+        std::fprintf(stderr, "[CUDA_INTERP] invalid charge cache completion.\n");
+        std::abort();
+    }
+    buf.charge_ready = true;
+}
+
 void InterpolationPoints::delete_from_device_cuda_() const {
     auto& buf = device_buffers_;
     CUDA_FREE_AND_NULL(buf.interp_x_dev);
     CUDA_FREE_AND_NULL(buf.interp_y_dev);
     CUDA_FREE_AND_NULL(buf.interp_z_dev);
+    CUDA_FREE_AND_NULL(buf.charge_dev);
     buf = DeviceBuffers{};
     device_state_ = CudaDeviceState::HostOnly;
 }

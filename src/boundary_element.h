@@ -167,7 +167,7 @@ private:
     int gmres_(long int n, const double* b, double* x, long int restrt,
                double* work, long int ldw, double *h, long int ldh,
                long int& iter, double& residual);
-    int gmres_impl_(const GmresView& view, bool enable_cuda_backend);
+    int gmres_impl_(const GmresView& view);
     int gmres_cpu_(const GmresView& view);
 #ifdef USE_CUDA_CC
     int gmres_cuda_(const GmresView& view);
@@ -187,9 +187,9 @@ private:
     bool validate_device_buffers_matrix_vector_(
         const double* potential_old, const double* potential_new) const;
     bool validate_device_buffers_particle_particle_() const;
-    bool validate_device_buffers_particle_cluster_(bool include_pp) const;
+    bool validate_device_buffers_particle_cluster_() const;
     bool validate_device_buffers_cluster_mixed_() const;
-    bool validate_device_buffers_upward_(bool use_split) const;
+    bool validate_device_buffers_upward_() const;
     bool validate_device_buffers_downward_(const double* potential) const;
     bool validate_device_buffers_clear_cluster_charges_() const;
     bool validate_device_buffers_clear_cluster_potentials_() const;
@@ -218,8 +218,7 @@ private:
     void particle_particle_interact_all(double* __restrict potential,
                               const double* __restrict potential_old);
     void particle_cluster_interact_all(double* __restrict potential,
-                              const double* __restrict potential_old,
-                              bool include_pp);
+                              const double* __restrict potential_old);
     void cluster_particle_interact_all(double* __restrict potential);
     void cluster_cluster_interact_all(double* __restrict potential);
             

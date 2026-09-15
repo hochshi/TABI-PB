@@ -45,7 +45,9 @@ SourceTermCompute::SourceTermCompute(class Elements& elements, const class Inter
     num_mol_interp_charges_per_node_ = std::pow(num_mol_interp_pts_per_node_, 3);
     num_mol_charges_                 = source_tree_.num_nodes() * num_mol_interp_charges_per_node_;
     
+#ifndef USE_CUDA_CC
     mol_interp_charge_.assign(num_mol_charges_, 0.);
+#endif
 
     max_mol_particles_per_node_ = 0;
     for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
@@ -140,20 +142,21 @@ void SourceTermCompute::compute()
 {
     SourceTermCompute::copyin_clusters_to_device();
 #if defined(USE_CUDA_CC)
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all =
-        !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    if (require_all && !validate_device_buffers_common_()) {
-        std::cerr << "[CUDA_SOURCE_TERM] require_all set but device buffers not ready. "
-                  << "Aborting to avoid CPU/OpenACC fallback.\n";
+    if (!validate_device_buffers_common_()) {
+        std::cerr << "[CUDA_SOURCE_TERM] device buffers not ready.\n";
         std::exit(1);
     }
-    if (run_batched_interactions_cuda_()) {
-        SourceTermCompute::delete_clusters_from_device();
-        return;
+#ifdef USE_CUDA_BATCHED_INTERACTIONS
+    if (!run_batched_interactions_cuda_()) {
+        std::cerr << "[CUDA_SOURCE_TERM] batched CUDA path unavailable.\n";
+        std::exit(1);
     }
-#endif
+#else
     SourceTermCompute::run();
+#endif
+#else
+    SourceTermCompute::run();
+#endif
     SourceTermCompute::delete_clusters_from_device();
 }
 
@@ -170,9 +173,7 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
         source_term_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_particle_particle_()) {
+    if (validate_device_buffers_particle_particle_()) {
         const auto elem_dev = elements_.device_view();
         const auto mol_dev = molecule_.device_view();
         if (source_term_try_particle_particle_cuda(elem_dev, mol_dev,
@@ -181,13 +182,16 @@ void SourceTermCompute::particle_particle_interact(std::array<std::size_t, 2> ta
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_SOURCE_TERM] particle-particle CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto elem_host = elements_.host_view();
     const auto mol_host = molecule_.host_view();
     source_term_particle_particle_cpu(elem_host, mol_host,
                                       target_node_idxs, source_node_idxs,
                                       params);
+#endif
 }
 
 
@@ -203,9 +207,7 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
         source_term_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_PC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_particle_cluster_()) {
+    if (validate_device_buffers_particle_cluster_()) {
         const auto elem_dev = elements_.device_view();
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -215,7 +217,9 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_SOURCE_TERM] particle-cluster CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto elem_host = elements_.host_view();
     auto self_host = host_view();
@@ -227,6 +231,7 @@ void SourceTermCompute::particle_cluster_interact(std::array<std::size_t, 2> tar
                                      target_node_idxs,
                                      source_node_idx,
                                      params);
+#endif
 }
 
 
@@ -242,9 +247,7 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
         source_term_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_cluster_particle_()) {
+    if (validate_device_buffers_cluster_particle_()) {
         const auto mol_dev = molecule_.device_view();
         const auto elem_interp_dev = elem_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -254,7 +257,9 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_SOURCE_TERM] cluster-particle CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto mol_host = molecule_.host_view();
     auto self_host = host_view();
@@ -266,6 +271,7 @@ void SourceTermCompute::cluster_particle_interact(std::size_t target_node_idx,
                                      target_node_idx,
                                      source_node_idxs,
                                      params);
+#endif
 }
 
 
@@ -281,9 +287,7 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
         source_term_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_CC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_cluster_cluster_()) {
+    if (validate_device_buffers_cluster_cluster_()) {
         const auto elem_interp_dev = elem_interp_pts_.device_view();
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -293,7 +297,9 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_SOURCE_TERM] cluster-cluster CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     auto self_host = host_view();
     source_term_cluster_cluster_cpu(elem_interp_pts_.interp_x_ptr(),
@@ -306,6 +312,7 @@ void SourceTermCompute::cluster_cluster_interact(std::size_t target_node_idx,
                                     target_node_idx,
                                     source_node_idx,
                                     params);
+#endif
 }
 
 
@@ -320,18 +327,22 @@ void SourceTermCompute::upward_pass()
         source_term_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_UP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_upward_pass_()) {
+    if (mol_interp_pts_.charge_cache_ready(num_mol_charges_)) {
+        return;
+    }
+    if (validate_device_buffers_upward_pass_()) {
         const auto mol_dev = molecule_.device_view();
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto self_dev = device_view();
         if (source_term_try_upward_pass_cuda(mol_dev, mol_interp_dev, self_dev,
                                              source_tree_, params, nullptr)) {
+            mol_interp_pts_.mark_charge_cache_ready(num_mol_charges_);
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_SOURCE_TERM] upward CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto mol_host = molecule_.host_view();
     auto self_host = host_view();
@@ -342,6 +353,7 @@ void SourceTermCompute::upward_pass()
                                 self_host,
                                 source_tree_,
                                 params);
+#endif
 }
 
 
@@ -356,9 +368,7 @@ void SourceTermCompute::downward_pass()
         source_term_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOURCE_TERM_DOWN");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_downward_pass_()) {
+    if (validate_device_buffers_downward_pass_()) {
         const auto elem_dev = elements_.device_view();
         const auto elem_interp_dev = elem_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -367,7 +377,9 @@ void SourceTermCompute::downward_pass()
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_SOURCE_TERM] downward CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto elem_host = elements_.host_view();
     const auto self_host = host_view();
@@ -378,6 +390,7 @@ void SourceTermCompute::downward_pass()
                                   self_host,
                                   target_tree_,
                                   params);
+#endif
 }
 
 void SourceTermCompute::copyin_clusters_to_device() const

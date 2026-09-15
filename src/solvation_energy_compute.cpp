@@ -14,14 +14,8 @@
 namespace {
 
 #ifdef USE_CUDA_CC
-bool cuda_require_all_enabled() {
-  const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-  return !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-}
-
-void abort_require_all(const char* step) {
-  std::cerr << "[CUDA_SOLVATION] require_all set but CUDA path unavailable in "
-            << step << ". Aborting to avoid CPU fallback.\n";
+void abort_cuda_unavailable(const char* step) {
+  std::cerr << "[CUDA_SOLVATION] CUDA path unavailable in " << step << ".\n";
   std::exit(1);
 }
 #endif
@@ -62,7 +56,9 @@ SolvationEnergyCompute::SolvationEnergyCompute(std::vector<double>& potential,
     num_mol_interp_charges_per_node_ = std::pow(num_mol_interp_pts_per_node_, 3);
     num_mol_charges_                 = source_tree_.num_nodes() * num_mol_interp_charges_per_node_;
 
+#ifndef USE_CUDA_CC
     mol_interp_charge_.assign(num_mol_charges_, 0.);
+#endif
 
     max_mol_particles_per_node_ = 0;
     for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
@@ -164,19 +160,21 @@ double SolvationEnergyCompute::compute()
 {
     SolvationEnergyCompute::copyin_clusters_to_device();
 #ifdef USE_CUDA_CC
-    const bool require_all_dbg = cuda_require_all_enabled();
-    if (require_all_dbg && !validate_device_buffers_common_()) {
-        std::cerr << "[CUDA_SOLVATION] require_all set but device buffers not ready. "
-                  << "Aborting to avoid CPU fallback.\n";
+    if (!validate_device_buffers_common_()) {
+        std::cerr << "[CUDA_SOLVATION] device buffers not ready.\n";
         std::exit(1);
     }
-    if (run_batched_interactions_cuda_()) {
-        SolvationEnergyCompute::delete_clusters_from_device();
-        solvation_energy_ = solv_eng_vec_[0];
-        return solvation_energy_;
+#ifdef USE_CUDA_BATCHED_INTERACTIONS
+    if (!run_batched_interactions_cuda_()) {
+        std::cerr << "[CUDA_SOLVATION] batched CUDA path unavailable.\n";
+        std::exit(1);
     }
-#endif
+#else
     SolvationEnergyCompute::run();
+#endif
+#else
+    SolvationEnergyCompute::run();
+#endif
     SolvationEnergyCompute::delete_clusters_from_device();
 
     solvation_energy_ = solv_eng_vec_[0];
@@ -198,9 +196,7 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
         potential_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOLVATION_PP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_particle_particle_()) {
+    if (validate_device_buffers_particle_particle_()) {
         const auto elem_dev = elements_.device_view();
         const auto mol_dev = molecule_.device_view();
         const auto self_dev = device_view();
@@ -211,10 +207,8 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
             return;
         }
     }
-    if (use_cuda && cuda_require_all_enabled()) {
-        abort_require_all("particle_particle_interact");
-    }
-#endif
+    abort_cuda_unavailable("particle_particle_interact");
+#else
 
     const auto elem_host = elements_.host_view();
     const auto mol_host = molecule_.host_view();
@@ -222,6 +216,7 @@ void SolvationEnergyCompute::particle_particle_interact(std::array<std::size_t, 
     solvation_particle_particle_cpu(elem_host, mol_host, self_host,
                                     target_node_idxs, source_node_idxs,
                                     potential_.data(), params);
+#endif
 }
 
 
@@ -238,9 +233,7 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
         potential_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOLVATION_PC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_particle_cluster_()) {
+    if (validate_device_buffers_particle_cluster_()) {
         const auto elem_dev = elements_.device_view();
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -251,10 +244,8 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
             return;
         }
     }
-    if (use_cuda && cuda_require_all_enabled()) {
-        abort_require_all("particle_cluster_interact");
-    }
-#endif
+    abort_cuda_unavailable("particle_cluster_interact");
+#else
 
     const auto elem_host = elements_.host_view();
     auto self_host = host_view();
@@ -267,6 +258,7 @@ void SolvationEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
                                    source_node_idx,
                                    potential_.data(),
                                    params);
+#endif
 }
 
 
@@ -283,9 +275,7 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
         potential_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOLVATION_CP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_cluster_particle_()) {
+    if (validate_device_buffers_cluster_particle_()) {
         const auto mol_dev = molecule_.device_view();
         const auto elem_interp_dev = elem_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -295,10 +285,8 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
             return;
         }
     }
-    if (use_cuda && cuda_require_all_enabled()) {
-        abort_require_all("cluster_particle_interact");
-    }
-#endif
+    abort_cuda_unavailable("cluster_particle_interact");
+#else
 
     const auto mol_host = molecule_.host_view();
     auto self_host = host_view();
@@ -310,6 +298,7 @@ void SolvationEnergyCompute::cluster_particle_interact(std::size_t target_node_i
                                    target_node_idx,
                                    source_node_idxs,
                                    params);
+#endif
 }
 
 
@@ -326,9 +315,7 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
         potential_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOLVATION_CC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_cluster_cluster_()) {
+    if (validate_device_buffers_cluster_cluster_()) {
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto elem_interp_dev = elem_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -338,10 +325,8 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
             return;
         }
     }
-    if (use_cuda && cuda_require_all_enabled()) {
-        abort_require_all("cluster_cluster_interact");
-    }
-#endif
+    abort_cuda_unavailable("cluster_cluster_interact");
+#else
 
     auto self_host = host_view();
     solvation_cluster_cluster_cpu(elem_interp_pts_.interp_x_ptr(),
@@ -354,6 +339,7 @@ void SolvationEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
                                   target_node_idx,
                                   source_node_idx,
                                   params);
+#endif
 }
 
 
@@ -369,21 +355,21 @@ void SolvationEnergyCompute::upward_pass()
         potential_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOLVATION_UP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_upward_pass_()) {
+    if (mol_interp_pts_.charge_cache_ready(num_mol_charges_)) {
+        return;
+    }
+    if (validate_device_buffers_upward_pass_()) {
         const auto mol_dev = molecule_.device_view();
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto self_dev = device_view();
         if (solvation_try_upward_pass_cuda(mol_dev, mol_interp_dev, self_dev,
                                            source_tree_, params, nullptr)) {
+            mol_interp_pts_.mark_charge_cache_ready(num_mol_charges_);
             return;
         }
     }
-    if (use_cuda && cuda_require_all_enabled()) {
-        abort_require_all("upward_pass");
-    }
-#endif
+    abort_cuda_unavailable("upward_pass");
+#else
 
     const auto mol_host = molecule_.host_view();
     auto self_host = host_view();
@@ -394,6 +380,7 @@ void SolvationEnergyCompute::upward_pass()
                               self_host,
                               source_tree_,
                               params);
+#endif
 }
 
 
@@ -409,9 +396,7 @@ void SolvationEnergyCompute::downward_pass()
         potential_offset_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_SOLVATION_DOWN");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_downward_pass_()) {
+    if (validate_device_buffers_downward_pass_()) {
         const auto elem_dev = elements_.device_view();
         const auto elem_interp_dev = elem_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -421,10 +406,8 @@ void SolvationEnergyCompute::downward_pass()
             return;
         }
     }
-    if (use_cuda && cuda_require_all_enabled()) {
-        abort_require_all("downward_pass");
-    }
-#endif
+    abort_cuda_unavailable("downward_pass");
+#else
 
     const auto elem_host = elements_.host_view();
     auto self_host = host_view();
@@ -436,6 +419,7 @@ void SolvationEnergyCompute::downward_pass()
                                 self_host,
                                 target_tree_,
                                 params);
+#endif
 }
 
 void SolvationEnergyCompute::copyin_clusters_to_device() const

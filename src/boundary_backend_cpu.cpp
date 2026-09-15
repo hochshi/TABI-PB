@@ -21,25 +21,7 @@ void BoundaryElement::matrix_vector_cpu_(double alpha, const double* __restrict 
     elements_.compute_charges(potential_old);
     BoundaryElement::upward_pass();
 
-    bool use_fused_pppc = false;
-#ifdef USE_CUDA_CC
-    {
-        const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-        const bool require_all =
-            !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-        const char* fused_env = std::getenv("TABIPB_CUDA_PPPC_FUSED");
-        const char* require_fused_env = std::getenv("TABIPB_CUDA_REQUIRE_PPPC");
-        const bool require_fused =
-            require_all || (require_fused_env && std::strcmp(require_fused_env, "0") != 0);
-        use_fused_pppc = require_fused || (fused_env && std::strcmp(fused_env, "0") != 0);
-    }
-#endif
-    if (use_fused_pppc) {
-        BoundaryElement::particle_cluster_interact_all(potential_new, potential_old, true);
-    } else {
-        BoundaryElement::particle_particle_interact_all(potential_new, potential_old);
-        BoundaryElement::particle_cluster_interact_all(potential_new, potential_old, false);
-    }
+    BoundaryElement::particle_cluster_interact_all(potential_new, potential_old);
     BoundaryElement::cluster_cluster_interact_all(potential_new);
 
     BoundaryElement::downward_pass(potential_new);

@@ -55,11 +55,9 @@ void Output::copyin_potential_to_device_cuda_(const double* potential_ptr,
     buf.ready = true;
     device_state_ = CudaDeviceState::DeviceMapped;
 
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    if (require_all && potential_num > 0) {
+    if (potential_num > 0) {
         if (!buf.potential_dev || !buf.ready || buf.potential_num != potential_num) {
-            std::cerr << "[CUDA_OUTPUT] require_all set but potential buffer not ready. "
+            std::cerr << "[CUDA_OUTPUT] potential buffer not ready. "
                       << "Aborting to avoid OpenACC fallback.\n";
             std::exit(1);
         }
@@ -75,16 +73,10 @@ void Output::cleanup_potential_device_buffer_cuda_() const {
 }
 
 bool Output::try_compute_coulombic_energy_cuda_(double& coulombic_energy) const {
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const bool present_ok = validate_device_buffers_compute_coulombic_energy_();
     if (!present_ok) {
-        if (require_all) {
-            std::cerr << "[CUDA_OUTPUT] require_all set but device pointers not present. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
-        return false;
+        std::cerr << "[CUDA_OUTPUT] device pointers not present.\n";
+        std::exit(1);
     }
 
     const auto mol_dev = molecule_.device_view();
@@ -126,16 +118,10 @@ bool Output::try_compute_coulombic_energy_cuda_(double& coulombic_energy) const 
 }
 
 bool Output::try_compute_solvation_energy_cuda_(double& solvation_energy) const {
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     const bool present_ok = validate_device_buffers_compute_solvation_energy_();
     if (!present_ok) {
-        if (require_all) {
-            std::cerr << "[CUDA_OUTPUT] require_all set but device pointers not present. "
-                      << "Aborting to avoid OpenACC fallback.\n";
-            std::exit(1);
-        }
-        return false;
+        std::cerr << "[CUDA_OUTPUT] device pointers not present.\n";
+        std::exit(1);
     }
 
     const auto elem_dev = elements_.device_view();

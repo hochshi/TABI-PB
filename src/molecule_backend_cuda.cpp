@@ -8,10 +8,6 @@
 #include "cuda_helpers.h"
 
 void Molecule::copyin_to_device_cuda_() const {
-  const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-  const bool require_all =
-      !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-
   const std::size_t num_particles = num_;
   const std::size_t x_num = x_.size();
   const std::size_t y_num = y_.size();
@@ -62,12 +58,12 @@ void Molecule::copyin_to_device_cuda_() const {
   buf.ready = true;
   device_state_ = CudaDeviceState::DeviceMapped;
 
-  if (require_all && num_particles > 0) {
+  if (num_particles > 0) {
     if (!buf.particles_x_dev || !buf.particles_y_dev || !buf.particles_z_dev ||
         !buf.charge_dev) {
       std::fprintf(stderr,
                    "[CUDA] Molecule copyin missing device buffers under "
-                   "TABIPB_CUDA_REQUIRE_ALL=1\n");
+                   "a native-CUDA build\n");
       std::abort();
     }
   }

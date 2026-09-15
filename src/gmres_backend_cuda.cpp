@@ -6,7 +6,7 @@
 
 int BoundaryElement::gmres_cuda_(const GmresView& view)
 {
-    return gmres_impl_(view, true);
+    return gmres_impl_(view);
 }
 
 void gmres_update_cuda(long int i, long int n, double* x,

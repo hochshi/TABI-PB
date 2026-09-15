@@ -8,7 +8,6 @@ add_executable(tabipb main.cpp
         molecule.cpp molecule.h
         molecule_backend_cuda.cpp
         elements.cpp elements.h
-        elements_backend_common.h
         elements_backend_cpu.h elements_backend_cpu.cpp
         elements_backend_cuda.h elements_backend_cuda.cpp
         tree.cpp tree.h
@@ -45,6 +44,18 @@ add_executable(tabipb main.cpp
 if (ENABLE_CUDA_CC)
     target_sources(tabipb PRIVATE cc_cuda.cu cc_cuda.h up_cuda.cu up_cuda.h source_term_cuda.cu source_term_cuda.h coulombic_energy_cuda.cu coulombic_energy_cuda.h solvation_energy_cuda.cu solvation_energy_cuda.h be_cuda.cu be_cuda.h elements_cuda.cu elements_cuda.h down_cuda.cu down_cuda.h pc_cuda.cu pc_cuda.h pp_cuda.cu pp_cuda.h pppc_cuda.cu pppc_cuda.h gmres_cuda.cu gmres_cuda.h precondition_cuda.cu precondition_cuda.h interp_pts_cuda.cu interp_pts_cuda.h output_cuda.cu output_cuda.h)
     target_compile_definitions(tabipb PRIVATE USE_CUDA_CC)
+    if (ENABLE_CUDA_BATCHED_INTERACTIONS)
+        target_compile_definitions(tabipb PRIVATE USE_CUDA_BATCHED_INTERACTIONS)
+    endif ()
+    if (ENABLE_CUDA_FUSED_PPPC)
+        target_compile_definitions(tabipb PRIVATE USE_CUDA_FUSED_PPPC)
+    endif ()
+    if (ENABLE_CUDA_UPWARD_SPLIT)
+        target_compile_definitions(tabipb PRIVATE USE_CUDA_UPWARD_SPLIT)
+    endif ()
+    if (ENABLE_CUDA_COPY_STATS)
+        target_compile_definitions(tabipb PRIVATE USE_CUDA_COPY_STATS)
+    endif ()
     if (CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
         # Avoid forwarding NVHPC-specific host flags (e.g. -gpu=ccXX) into nvcc.
         set_target_properties(tabipb PROPERTIES CUDA_PROPAGATE_HOST_FLAGS OFF)
@@ -110,7 +121,6 @@ if (ENABLE_TABIPB_APBS)
         params.cpp params.h particles.cpp particles.h 
         molecule.cpp molecule.h molecule_backend_cuda.cpp elements.cpp elements.h tree.cpp tree.h
         interp_pts.cpp interp_pts.h interp_pts_backend_cpu.h interp_pts_backend_cpu.cpp interp_pts_backend_cuda.h interp_pts_backend_cuda.cpp
-        elements_backend_common.h
         elements_backend_cpu.h elements_backend_cpu.cpp
         elements_backend_cuda.h elements_backend_cuda.cpp
         interaction_list.cpp interaction_list.h tree_compute.cpp tree_compute.h
@@ -154,6 +164,18 @@ if (ENABLE_TABIPB_APBS)
 
     if (ENABLE_CUDA_CC)
         target_compile_definitions(${TABIPB_LIBNAME} PRIVATE USE_CUDA_CC)
+        if (ENABLE_CUDA_BATCHED_INTERACTIONS)
+            target_compile_definitions(${TABIPB_LIBNAME} PRIVATE USE_CUDA_BATCHED_INTERACTIONS)
+        endif ()
+        if (ENABLE_CUDA_FUSED_PPPC)
+            target_compile_definitions(${TABIPB_LIBNAME} PRIVATE USE_CUDA_FUSED_PPPC)
+        endif ()
+        if (ENABLE_CUDA_UPWARD_SPLIT)
+            target_compile_definitions(${TABIPB_LIBNAME} PRIVATE USE_CUDA_UPWARD_SPLIT)
+        endif ()
+        if (ENABLE_CUDA_COPY_STATS)
+            target_compile_definitions(${TABIPB_LIBNAME} PRIVATE USE_CUDA_COPY_STATS)
+        endif ()
         if (CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
             # Avoid forwarding NVHPC-specific host flags (e.g. -gpu=ccXX) into nvcc.
             set_target_properties(${TABIPB_LIBNAME} PROPERTIES CUDA_PROPAGATE_HOST_FLAGS OFF)

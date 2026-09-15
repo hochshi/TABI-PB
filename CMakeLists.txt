@@ -48,6 +48,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib)
 # CUDA CC kernel
 ################################################################################
 option(ENABLE_CUDA_CC "CUDA CC kernel" OFF)
+option(ENABLE_CUDA_BATCHED_INTERACTIONS "Use batched CUDA interaction kernels" ON)
+option(ENABLE_CUDA_FUSED_PPPC "Use the fused CUDA PP/PC kernel" OFF)
+option(ENABLE_CUDA_UPWARD_SPLIT "Use split CUDA upward-pass kernels" OFF)
+option(ENABLE_CUDA_COPY_STATS "Collect CUDA copy/synchronization statistics" OFF)
 
 if (ENABLE_CUDA_CC)
     enable_language(CUDA)

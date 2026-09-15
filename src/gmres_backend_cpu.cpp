@@ -2,5 +2,5 @@
 
 int BoundaryElement::gmres_cpu_(const GmresView& view)
 {
-    return gmres_impl_(view, false);
+    return gmres_impl_(view);
 }

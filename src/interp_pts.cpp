@@ -52,8 +52,6 @@ void InterpolationPoints::compute_all_interp_pts()
     const auto bounds = build_node_bounds(tree_);
 
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
     if (validate_device_buffers_compute_interp_pts_()) {
         const auto interp_view = device_view();
         if (interp_pts_try_compute_cuda(bounds.data(), num_nodes, num_interp_pts_per_node,
@@ -61,12 +59,10 @@ void InterpolationPoints::compute_all_interp_pts()
             return;
         }
     }
-    if (require_all) {
-        std::fprintf(stderr,
-                     "[CUDA_INTERP] TABIPB_CUDA_REQUIRE_ALL=1 but interp "
-                     "device buffers are not mapped.\n");
-        std::abort();
-    }
+    std::fprintf(stderr,
+                 "[CUDA_INTERP] native-CUDA build has no mapped interp "
+                 "device buffers are not mapped.\n");
+    std::abort();
 #endif
 
     const auto interp_view = host_view();
@@ -85,13 +81,11 @@ void InterpolationPoints::copyin_to_device() const
 #ifdef USE_CUDA_CC
     copyin_to_device_cuda_();
     const std::size_t num_interp_pts = num_interp_pts_;
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all = !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    if (require_all && num_interp_pts > 0) {
+    if (num_interp_pts > 0) {
         if (!validate_device_buffers_compute_interp_pts_()) {
             std::fprintf(stderr,
                          "[CUDA_INTERP] missing device buffers under "
-                         "TABIPB_CUDA_REQUIRE_ALL=1\n");
+                         "native-CUDA execution\n");
             std::abort();
         }
     }

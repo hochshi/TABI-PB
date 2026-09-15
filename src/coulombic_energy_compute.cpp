@@ -31,8 +31,12 @@ CoulombicEnergyCompute::CoulombicEnergyCompute(const class Molecule& molecule,
     num_mol_interp_potentials_per_node_ = num_mol_interp_charges_per_node_;
     num_mol_potentials_                 = num_mol_charges_;
     
+#ifndef USE_CUDA_CC
     mol_interp_charge_.assign(num_mol_charges_, 0.);
+#endif
+#ifndef USE_CUDA_CC
     mol_interp_potential_.assign(num_mol_potentials_, 0.);
+#endif
 
     max_mol_particles_per_node_ = 0;
     for (std::size_t node_idx = 0; node_idx < source_tree_.num_nodes(); ++node_idx) {
@@ -77,19 +81,10 @@ CoulombicEnergyCompute::CoulombicEnergyCompute(const class Molecule& molecule,
     const auto& pp_sources = interaction_list_.particle_particle_flat();
     const auto& pc_offsets = interaction_list_.particle_cluster_offsets();
     const auto& pc_sources = interaction_list_.particle_cluster_flat();
-    const auto& cp_offsets = interaction_list_.cluster_particle_offsets();
-    const auto& cp_sources = interaction_list_.cluster_particle_flat();
-    const auto& cc_offsets = interaction_list_.cluster_cluster_offsets();
-    const auto& cc_sources = interaction_list_.cluster_cluster_flat();
-
     pp_offsets_u32_.resize(pp_offsets.size());
     pp_sources_u32_.resize(pp_sources.size());
     pc_offsets_u32_.resize(pc_offsets.size());
     pc_sources_u32_.resize(pc_sources.size());
-    cp_offsets_u32_.resize(cp_offsets.size());
-    cp_sources_u32_.resize(cp_sources.size());
-    cc_offsets_u32_.resize(cc_offsets.size());
-    cc_sources_u32_.resize(cc_sources.size());
 
     for (std::size_t i = 0; i < pp_offsets.size(); ++i)
         pp_offsets_u32_[i] = static_cast<std::uint32_t>(pp_offsets[i]);
@@ -99,15 +94,6 @@ CoulombicEnergyCompute::CoulombicEnergyCompute(const class Molecule& molecule,
         pc_offsets_u32_[i] = static_cast<std::uint32_t>(pc_offsets[i]);
     for (std::size_t i = 0; i < pc_sources.size(); ++i)
         pc_sources_u32_[i] = static_cast<std::uint32_t>(pc_sources[i]);
-    for (std::size_t i = 0; i < cp_offsets.size(); ++i)
-        cp_offsets_u32_[i] = static_cast<std::uint32_t>(cp_offsets[i]);
-    for (std::size_t i = 0; i < cp_sources.size(); ++i)
-        cp_sources_u32_[i] = static_cast<std::uint32_t>(cp_sources[i]);
-    for (std::size_t i = 0; i < cc_offsets.size(); ++i)
-        cc_offsets_u32_[i] = static_cast<std::uint32_t>(cc_offsets[i]);
-    for (std::size_t i = 0; i < cc_sources.size(); ++i)
-        cc_sources_u32_[i] = static_cast<std::uint32_t>(cc_sources[i]);
-
     /* Coulombic energy */
 
     coul_eng_vec_.resize(1);
@@ -123,21 +109,21 @@ double CoulombicEnergyCompute::compute()
 {
     CoulombicEnergyCompute::copyin_clusters_to_device();
 #ifdef USE_CUDA_CC
-    const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-    const bool require_all =
-        !(require_all_env && std::strcmp(require_all_env, "0") == 0);
-    if (require_all && !validate_device_buffers_common_()) {
-        std::cerr << "[CUDA_COULOMBIC] require_all set but device buffers not ready. "
-                  << "Aborting to avoid CPU fallback.\n";
+    if (!validate_device_buffers_common_()) {
+        std::cerr << "[CUDA_COULOMBIC] device buffers not ready.\n";
         std::exit(1);
     }
-    if (run_batched_interactions_cuda_()) {
-        CoulombicEnergyCompute::delete_clusters_from_device();
-        coulombic_energy_ = coul_eng_vec_[0] / 2;
-        return coulombic_energy_;
+#ifdef USE_CUDA_BATCHED_INTERACTIONS
+    if (!run_batched_interactions_cuda_()) {
+        std::cerr << "[CUDA_COULOMBIC] batched CUDA path unavailable.\n";
+        std::exit(1);
     }
-#endif
+#else
     CoulombicEnergyCompute::run();
+#endif
+#else
+    CoulombicEnergyCompute::run();
+#endif
     CoulombicEnergyCompute::delete_clusters_from_device();
     
     coulombic_energy_ = coul_eng_vec_[0] / 2;
@@ -156,9 +142,7 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
         num_mol_interp_potentials_per_node_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_particle_particle_()) {
+    if (validate_device_buffers_particle_particle_()) {
         const auto mol_dev = molecule_.device_view();
         const auto self_dev = device_view();
         if (coulombic_try_particle_particle_cuda(mol_dev, self_dev,
@@ -167,13 +151,16 @@ void CoulombicEnergyCompute::particle_particle_interact(std::array<std::size_t, 
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_COULOMBIC] particle-particle CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto mol_host = molecule_.host_view();
     auto self_host = host_view();
     coulombic_particle_particle_cpu(mol_host, self_host,
                                     target_node_idxs, source_node_idxs,
                                     params);
+#endif
 }
 
 
@@ -187,9 +174,7 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
         num_mol_interp_potentials_per_node_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_PC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_particle_cluster_()) {
+    if (validate_device_buffers_particle_cluster_()) {
         const auto mol_dev = molecule_.device_view();
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto self_dev = device_view();
@@ -199,7 +184,9 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_COULOMBIC] particle-cluster CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto mol_host = molecule_.host_view();
     const auto self_host = host_view();
@@ -211,32 +198,23 @@ void CoulombicEnergyCompute::particle_cluster_interact(std::array<std::size_t, 2
                                    target_node_idxs,
                                    source_node_idx,
                                    params);
+#endif
 }
 
 
 void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_idx,
                                                        std::array<std::size_t, 2> source_node_idxs)
 {
+#ifdef USE_CUDA_CC
+    // Match the CPU reference: CP only updates the unused interpolation potential.
+    (void)target_node_idx;
+    (void)source_node_idxs;
+#else
     const CoulombicBackendParams params{
         eps_solute_,
         num_mol_interp_pts_per_node_,
         num_mol_interp_charges_per_node_,
         num_mol_interp_potentials_per_node_};
-
-#ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_cluster_particle_()) {
-        const auto mol_dev = molecule_.device_view();
-        const auto mol_interp_dev = mol_interp_pts_.device_view();
-        const auto self_dev = device_view();
-        if (coulombic_try_cluster_particle_cuda(mol_dev, mol_interp_dev, self_dev,
-                                                target_node_idx, source_node_idxs,
-                                                params, nullptr)) {
-            return;
-        }
-    }
-#endif
 
     const auto mol_host = molecule_.host_view();
     auto self_host = host_view();
@@ -248,31 +226,23 @@ void CoulombicEnergyCompute::cluster_particle_interact(std::size_t target_node_i
                                    target_node_idx,
                                    source_node_idxs,
                                    params);
+#endif
 }
 
 
 void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_idx,
                                                       std::size_t source_node_idx)
 {
+#ifdef USE_CUDA_CC
+    // Match the CPU reference: CC only updates the unused interpolation potential.
+    (void)target_node_idx;
+    (void)source_node_idx;
+#else
     const CoulombicBackendParams params{
         eps_solute_,
         num_mol_interp_pts_per_node_,
         num_mol_interp_charges_per_node_,
         num_mol_interp_potentials_per_node_};
-
-#ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_CC");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_cluster_cluster_()) {
-        const auto mol_interp_dev = mol_interp_pts_.device_view();
-        const auto self_dev = device_view();
-        if (coulombic_try_cluster_cluster_cuda(mol_interp_dev, self_dev,
-                                               target_node_idx, source_node_idx,
-                                               params, nullptr)) {
-            return;
-        }
-    }
-#endif
 
     auto self_host = host_view();
     coulombic_cluster_cluster_cpu(mol_interp_pts_.interp_x_ptr(),
@@ -282,6 +252,7 @@ void CoulombicEnergyCompute::cluster_cluster_interact(std::size_t target_node_id
                                   target_node_idx,
                                   source_node_idx,
                                   params);
+#endif
 }
 
 
@@ -294,18 +265,22 @@ void CoulombicEnergyCompute::upward_pass()
         num_mol_interp_potentials_per_node_};
 
 #ifdef USE_CUDA_CC
-    const char* env_disable = std::getenv("TABIPB_CUDA_COULOMBIC_UP");
-    const bool use_cuda = !(env_disable && std::strcmp(env_disable, "0") == 0);
-    if (use_cuda && validate_device_buffers_upward_pass_()) {
+    if (mol_interp_pts_.charge_cache_ready(num_mol_charges_)) {
+        return;
+    }
+    if (validate_device_buffers_upward_pass_()) {
         const auto mol_dev = molecule_.device_view();
         const auto mol_interp_dev = mol_interp_pts_.device_view();
         const auto self_dev = device_view();
         if (coulombic_try_upward_pass_cuda(mol_dev, mol_interp_dev, self_dev,
                                            source_tree_, params, nullptr)) {
+            mol_interp_pts_.mark_charge_cache_ready(num_mol_charges_);
             return;
         }
     }
-#endif
+    std::cerr << "[CUDA_COULOMBIC] upward CUDA path unavailable.\n";
+    std::exit(1);
+#else
 
     const auto mol_host = molecule_.host_view();
     auto self_host = host_view();
@@ -316,6 +291,7 @@ void CoulombicEnergyCompute::upward_pass()
                               self_host,
                               source_tree_,
                               params);
+#endif
 }
 
 

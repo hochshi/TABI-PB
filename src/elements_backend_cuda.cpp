@@ -81,9 +81,6 @@ bool elements_try_compute_charges_cuda(
 
 #ifdef USE_CUDA_CC
 void Elements::copyin_to_device_cuda_() const {
-  const char* require_all_env = std::getenv("TABIPB_CUDA_REQUIRE_ALL");
-  const bool require_all =
-      !(require_all_env && std::strcmp(require_all_env, "0") == 0);
   const std::size_t num = num_;
   const std::size_t x_num = x_.size();
   const std::size_t y_num = y_.size();
@@ -185,7 +182,7 @@ void Elements::copyin_to_device_cuda_() const {
   CUDA_SYNC_AND_CHECK();
   device_state_ = CudaDeviceState::DeviceMapped;
 
-  if (require_all && num > 0) {
+  if (num > 0) {
     if (!ptrs.ready || !ptrs.x || !ptrs.y || !ptrs.z || !ptrs.nx || !ptrs.ny ||
         !ptrs.nz || !ptrs.area || !ptrs.source_term || !ptrs.target_q ||
         !ptrs.target_q_dx || !ptrs.target_q_dy || !ptrs.target_q_dz ||
@@ -193,7 +190,7 @@ void Elements::copyin_to_device_cuda_() const {
         !ptrs.source_q_dz) {
       std::fprintf(stderr,
                    "[CUDA_ELEMENTS] copyin missing device buffers under "
-                   "TABIPB_CUDA_REQUIRE_ALL=1\n");
+                   "a native-CUDA build\n");
       std::abort();
     }
   }

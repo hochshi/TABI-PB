@@ -28,8 +28,15 @@ from the top level directory of TABI-PB:
     mkdir build; cd build; export CC=<CXX compiler>; cmake ..; make
 
 This creates a `tabipb` executable located at `TABI-PB/build/bin/tabipb`.
-Compiling the GPU version requires that a PGI/ NVIDIA HPC C++ compiler be used, 
-and that `cmake` be invoked with the flag `-DENABLE_OPENACC=ON`.
+Compile the OpenACC version with an NVIDIA HPC compiler and
+`-DENABLE_OPENACC=ON`. Compile the native CUDA version with
+`-DENABLE_CUDA_CC=ON` and an explicit `CMAKE_CUDA_ARCHITECTURES` value.
+
+At startup, the executable reports the selected build backend as `CPU`, `OpenACC`,
+or `CUDA`. Native-CUDA builds always use CUDA execution paths and fail instead of
+silently falling back to CPU code. Development alternatives are selected at compile
+time with the `ENABLE_CUDA_*` CMake options; there are no CUDA runtime environment
+switches.
 
 `tabipb` relies on NanoShaper to triangulate the molecular surface. To get a NanoShaper
 executable appropriate for your system, invoke `cmake` with the flag `-DGET_NanoShaper=ON`.
